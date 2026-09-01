@@ -219,8 +219,8 @@ async def image_proxy_endpoint(url: str):
 @app.get("/{config}/stream/{type}/{id}.json")
 async def stream_endpoint(config: str, type: str, id: str):
     """Stream resolution endpoint returning EasyProxy-wrapped stream links."""
-    ep_url, ep_pass, _ = decode_config(config)
-    streams = await stream_service.get_streams_for_event(id, ep_url=ep_url, ep_pass=ep_pass)
+    ep_url, ep_pass, user_tz = decode_config(config)
+    streams = await stream_service.get_streams_for_event(id, ep_url=ep_url, ep_pass=ep_pass, user_tz=user_tz)
     return JSONResponse(content={"streams": streams})
 
 
