@@ -16,7 +16,6 @@ from app.config import (
     ADDON_VERSION,
     DISCIPLINE_CATALOGS,
     ID_PREFIXES,
-    STREAMED_API_HOST,
 )
 from app.services.catalog_service import catalog_service
 from app.services.doh_client import doh_client
@@ -250,3 +249,4 @@ async def stream_endpoint(config: str, type: str, id: str):
 async def health_check():
     """Service health check."""
     return {"status": "ok", "addon": ADDON_NAME, "version": ADDON_VERSION}
+
