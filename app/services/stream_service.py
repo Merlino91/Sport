@@ -120,34 +120,51 @@ class StreamService:
         from app.services.catalog_service import catalog_service
         start_time_str = catalog_service.format_event_date(date_ms, user_tz)
 
-        if diff_mins > 60:
+        if diff_mins > 1440:
+            days = diff_mins // 1440
+            hours = (diff_mins % 1440) // 60
+            time_left = f"{days}g {hours}h" if hours else f"{days} giorni"
+            return [{
+                "name": f"⏳ Inizia tra {time_left}",
+                "title": f"Inizio: {start_time_str} • I flussi saranno disponibili 20 minuti prima dell'inizio",
+                "url": "https://www.google.com",
+                "behaviorHints": {"notWebReady": True},
+            }]
+        elif diff_mins > 60:
             hours = diff_mins // 60
             mins = diff_mins % 60
             time_left = f"{hours}h {mins}m" if mins else f"{hours}h"
             return [{
                 "name": f"⏳ Inizia tra {time_left}",
-                "title": f"Inizio: {start_time_str} • I flussi saranno attivi ~15-30 min prima della diretta",
+                "title": f"Inizio: {start_time_str} • I flussi saranno disponibili 20 minuti prima dell'inizio",
+                "url": "https://www.google.com",
+                "behaviorHints": {"notWebReady": True},
+            }]
+        elif diff_mins > 20:
+            return [{
+                "name": f"⏳ Inizia tra ~{diff_mins} min",
+                "title": f"Inizio: {start_time_str} • I flussi saranno disponibili 20 minuti prima dell'inizio",
                 "url": "https://www.google.com",
                 "behaviorHints": {"notWebReady": True},
             }]
         elif diff_mins > 0:
             return [{
-                "name": f"⏳ Inizia tra ~{diff_mins} min",
-                "title": f"Inizio: {start_time_str} • I flussi si stanno attivando sui server, riprova a breve",
+                "name": "⏳ Inizio imminente (Caricamento flussi)",
+                "title": f"Inizio: {start_time_str} • I flussi sono in fase di attivazione sui server, riprova a breve",
                 "url": "https://www.google.com",
                 "behaviorHints": {"notWebReady": True},
             }]
-        elif diff_mins > -180:
+        elif diff_mins >= -180:
             return [{
-                "name": "🔴 In corso (Nessun flusso)",
-                "title": f"Iniziata alle {start_time_str} • Sorgenti temporaneamente non disponibili",
+                "name": "🔴 Partita in corso (Nessun flusso)",
+                "title": f"Iniziata alle {start_time_str} • Nessuna sorgente attiva al momento",
                 "url": "https://www.google.com",
                 "behaviorHints": {"notWebReady": True},
             }]
         else:
             return [{
                 "name": "🏁 Evento Terminato",
-                "title": f"Questa partita si è conclusa (iniziata alle {start_time_str})",
+                "title": f"Questa partita si è conclusa (iniziata il {start_time_str})",
                 "url": "https://www.google.com",
                 "behaviorHints": {"notWebReady": True},
             }]
@@ -161,6 +178,8 @@ class StreamService:
     ) -> List[Dict[str, Any]]:
         """
         Resolves streams for an event ID and formats them for Stremio.
+        Enforces time-window rules: hides streams until 20 min before start,
+        and marks event as ended 3 hours after start.
         """
         if not ep_url:
             return [
@@ -181,6 +200,20 @@ class StreamService:
         match = await streamed_api.find_match_by_slug_and_id(slug_id)
         if not match:
             return self.generate_status_card(None, user_tz)
+
+        # Time-window check: hide streams if > 20 min before start or > 3 hours after start
+        date_ms = match.get("date", 0)
+        if date_ms:
+            now_ms = time.time() * 1000
+            diff_mins = int((date_ms - now_ms) / 60000)
+
+            # More than 20 min before start -> show countdown card
+            if diff_mins > 20:
+                return self.generate_status_card(match, user_tz)
+
+            # More than 3 hours (180 min) after start -> show ended card
+            if diff_mins < -180:
+                return self.generate_status_card(match, user_tz)
 
         sources = match.get("sources", [])
         streams_result: List[Dict[str, Any]] = []
