@@ -1,4 +1,5 @@
 import logging
+import time
 import urllib.parse
 from typing import Any, Dict, List, Optional
 from app.services.streamed_api import streamed_api
@@ -93,11 +94,70 @@ class StreamService:
             url += f"&api_password={urllib.parse.quote(ep_pass)}"
         return url
 
+    def generate_status_card(self, match: Optional[Dict[str, Any]], user_tz: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Generates an informative placeholder card with countdown or match status."""
+        if not match:
+            return [{
+                "name": "Nessun flusso disponibile",
+                "title": "Evento non trovato o rimosso dai provider.",
+                "url": "https://www.google.com",
+                "behaviorHints": {"notWebReady": True},
+            }]
+
+        date_ms = match.get("date", 0)
+        if not date_ms:
+            return [{
+                "name": "Nessun flusso attivo",
+                "title": "Nessuna sorgente video attiva al momento. Riprova più tardi.",
+                "url": "https://www.google.com",
+                "behaviorHints": {"notWebReady": True},
+            }]
+
+        now_ms = time.time() * 1000
+        diff_mins = int((date_ms - now_ms) / 60000)
+
+        # Format localized start time
+        from app.services.catalog_service import catalog_service
+        start_time_str = catalog_service.format_event_date(date_ms, user_tz)
+
+        if diff_mins > 60:
+            hours = diff_mins // 60
+            mins = diff_mins % 60
+            time_left = f"{hours}h {mins}m" if mins else f"{hours}h"
+            return [{
+                "name": f"⏳ Inizia tra {time_left}",
+                "title": f"Inizio: {start_time_str} • I flussi saranno attivi ~15-30 min prima della diretta",
+                "url": "https://www.google.com",
+                "behaviorHints": {"notWebReady": True},
+            }]
+        elif diff_mins > 0:
+            return [{
+                "name": f"⏳ Inizia tra ~{diff_mins} min",
+                "title": f"Inizio: {start_time_str} • I flussi si stanno attivando sui server, riprova a breve",
+                "url": "https://www.google.com",
+                "behaviorHints": {"notWebReady": True},
+            }]
+        elif diff_mins > -180:
+            return [{
+                "name": "🔴 In corso (Nessun flusso)",
+                "title": f"Iniziata alle {start_time_str} • Sorgenti temporaneamente non disponibili",
+                "url": "https://www.google.com",
+                "behaviorHints": {"notWebReady": True},
+            }]
+        else:
+            return [{
+                "name": "🏁 Evento Terminato",
+                "title": f"Questa partita si è conclusa (iniziata alle {start_time_str})",
+                "url": "https://www.google.com",
+                "behaviorHints": {"notWebReady": True},
+            }]
+
     async def get_streams_for_event(
         self,
         item_id: str,
         ep_url: Optional[str],
-        ep_pass: Optional[str] = None
+        ep_pass: Optional[str] = None,
+        user_tz: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Resolves streams for an event ID and formats them for Stremio.
@@ -105,9 +165,10 @@ class StreamService:
         if not ep_url:
             return [
                 {
-                    "name": "EasySports Configuration Required",
-                    "title": "Please configure your EasyProxy URL in the addon settings.",
+                    "name": "Configurazione Richiesta",
+                    "title": "Configura l'URL del tuo EasyProxy nel pannello dell'addon.",
                     "url": "https://github.com/realbestia1/EasyProxy",
+                    "behaviorHints": {"notWebReady": True},
                 }
             ]
 
@@ -119,7 +180,7 @@ class StreamService:
 
         match = await streamed_api.find_match_by_slug_and_id(slug_id)
         if not match:
-            return [{"name": "No streams available", "url": ""}]
+            return self.generate_status_card(None, user_tz)
 
         sources = match.get("sources", [])
         streams_result: List[Dict[str, Any]] = []
@@ -160,7 +221,7 @@ class StreamService:
                 streams_result.append(stream_item)
 
         if not streams_result:
-            return [{"name": "No streams available", "url": ""}]
+            return self.generate_status_card(match, user_tz)
 
         return streams_result
 
