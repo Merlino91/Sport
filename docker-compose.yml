@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  easysports:
+    build: .
+    container_name: easysports-addon
+    restart: unless-stopped
+    ports:
+      - "7000:7000"
+    environment:
+      - EASYSPORTS_HOST=0.0.0.0
+      - EASYSPORTS_PORT=7000
+      - STREAMED_API_HOST=streamed.pk
+      - STREAMED_CACHE_TTL=60
