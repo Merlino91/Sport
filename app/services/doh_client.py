@@ -81,6 +81,35 @@ class DoHClient:
             except Exception as e:
                 logger.error("Failed requesting %s: %s", url, e)
 
-        return None
+    async def get_raw(self, url: str, host_header: Optional[str] = None, timeout: float = 10.0) -> Tuple[Optional[bytes], Optional[str]]:
+        """
+        Executes an HTTP GET request resolving host via DoH and returns raw bytes and content-type.
+        """
+        parsed = httpx.URL(url)
+        hostname = parsed.host
+
+        resolved_ip = await self.resolve(hostname)
+        target_url = url
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        }
+
+        if resolved_ip and resolved_ip != hostname:
+            target_url = str(parsed.copy_with(host=resolved_ip))
+            headers["Host"] = host_header or hostname
+
+        transport = httpx.AsyncHTTPTransport(verify=self._ssl_context)
+        async with httpx.AsyncClient(transport=transport, timeout=timeout) as client:
+            try:
+                response = await client.get(target_url, headers=headers)
+                if response.status_code == 200:
+                    content_type = response.headers.get("content-type", "image/webp")
+                    return response.content, content_type
+                logger.warning("Raw request to %s returned status %d", url, response.status_code)
+            except Exception as e:
+                logger.error("Failed raw request to %s: %s", url, e)
+
+        return None, None
 
 doh_client = DoHClient()
