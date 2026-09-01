@@ -3,7 +3,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Optional, Tuple
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -18,6 +18,7 @@ from app.config import (
     ID_PREFIXES,
 )
 from app.services.catalog_service import catalog_service
+from app.services.doh_client import doh_client
 from app.services.stream_service import stream_service
 
 # Setup logging
@@ -169,9 +170,10 @@ async def configured_manifest(config: str):
 
 @app.get("/{config}/catalog/{type}/{id}.json")
 @app.get("/{config}/catalog/{type}/{id}/{extra}.json")
-async def catalog_endpoint(config: str, type: str, id: str, extra: Optional[str] = None):
+async def catalog_endpoint(request: Request, config: str, type: str, id: str, extra: Optional[str] = None):
     """Catalog endpoint returning live sports matches for a discipline."""
     _, _, user_tz = decode_config(config)
+    base_url = str(request.base_url).rstrip("/")
 
     search_query = None
     if extra:
@@ -179,18 +181,39 @@ async def catalog_endpoint(config: str, type: str, id: str, extra: Optional[str]
         if extra.startswith("search="):
             search_query = extra.split("search=", 1)[1]
 
-    items = await catalog_service.get_catalog(id, search=search_query, user_tz=user_tz)
+    items = await catalog_service.get_catalog(id, search=search_query, user_tz=user_tz, base_url=base_url)
     return JSONResponse(content={"metas": items})
 
 
 @app.get("/{config}/meta/{type}/{id}.json")
-async def meta_endpoint(config: str, type: str, id: str):
+async def meta_endpoint(request: Request, config: str, type: str, id: str):
     """Meta detail endpoint for a specific match card."""
     _, _, user_tz = decode_config(config)
-    meta = await catalog_service.get_meta_detail(id, user_tz=user_tz)
+    base_url = str(request.base_url).rstrip("/")
+    meta = await catalog_service.get_meta_detail(id, user_tz=user_tz, base_url=base_url)
     if not meta:
         raise HTTPException(status_code=404, detail="Meta not found")
     return JSONResponse(content={"meta": meta})
+
+
+@app.get("/image-proxy")
+async def image_proxy_endpoint(url: str):
+    """Proxies poster/background images through DoH client to bypass ISP/DNS blocks."""
+    if not url:
+        raise HTTPException(status_code=400, detail="Missing url parameter")
+
+    content, content_type = await doh_client.get_raw(url)
+    if not content:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    return Response(
+        content=content,
+        media_type=content_type or "image/webp",
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
 
 
 @app.get("/{config}/stream/{type}/{id}.json")
@@ -205,3 +228,4 @@ async def stream_endpoint(config: str, type: str, id: str):
 async def health_check():
     """Service health check."""
     return {"status": "ok", "addon": ADDON_NAME, "version": ADDON_VERSION}
+
