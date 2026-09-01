@@ -78,5 +78,11 @@ class EasySportsTestCase(unittest.TestCase):
         self.assertIn("stremio://", response.text)
         self.assertIn("manifest.json", response.text)
 
+    def test_image_proxy_url_rewriting(self):
+        sample_path = "/api/images/proxy/test.webp"
+        proxied_url = catalog_service.normalize_image_url(sample_path, base_url="https://mysports.com")
+        self.assertIn("https://mysports.com/image-proxy?url=", proxied_url)
+        self.assertIn("streamed.pk", proxied_url)
+
 if __name__ == "__main__":
     unittest.main()
