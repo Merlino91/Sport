@@ -1,5 +1,6 @@
 import datetime
 import logging
+import urllib.parse
 from typing import Any, Dict, List, Optional
 import pytz
 from app.config import DISCIPLINE_CATALOGS, STREAMED_API_HOST
@@ -44,15 +45,28 @@ class CatalogService:
         # Format: e.g. "1 Sep 2026, 20:45"
         return dt_local.strftime("%d %b %Y, %H:%M").lstrip("0")
 
-    def normalize_image_url(self, path: Optional[str]) -> Optional[str]:
-        """Ensures image URL is absolute."""
+    def normalize_image_url(self, path: Optional[str], base_url: Optional[str] = None) -> Optional[str]:
+        """Ensures image URL is routed through addon image proxy to bypass DNS blocks."""
         if not path:
             return None
-        if path.startswith("http://") or path.startswith("https://"):
-            return path
-        return f"https://{STREAMED_API_HOST}{path}"
+        if not path.startswith("http://") and not path.startswith("https://"):
+            full_url = f"https://{STREAMED_API_HOST}{path}"
+        else:
+            full_url = path
 
-    def build_meta_item(self, match: Dict[str, Any], category_id: str, user_tz: Optional[str] = None) -> Dict[str, Any]:
+        if base_url:
+            encoded = urllib.parse.quote(full_url, safe="")
+            return f"{base_url}/image-proxy?url={encoded}"
+
+        return full_url
+
+    def build_meta_item(
+        self,
+        match: Dict[str, Any],
+        category_id: str,
+        user_tz: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Converts a raw match object into a Stremio meta preview object."""
         match_id = match.get("id", "")
         title = match.get("title", "Live Sports")
@@ -61,7 +75,7 @@ class CatalogService:
         formatted_date = self.format_event_date(date_ms, user_tz) if date_ms else "Live"
         is_popular = match.get("popular", False)
 
-        poster_url = self.normalize_image_url(match.get("poster"))
+        poster_url = self.normalize_image_url(match.get("poster"), base_url=base_url)
         discipline_label = DISCIPLINE_TITLES.get(category_id, DISCIPLINE_TITLES.get(match_category, "Live Sports"))
 
         # Formatted title and description
@@ -93,7 +107,13 @@ class CatalogService:
 
         return item
 
-    async def get_catalog(self, category_id: str, search: Optional[str] = None, user_tz: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def get_catalog(
+        self,
+        category_id: str,
+        search: Optional[str] = None,
+        user_tz: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """Returns the list of meta items for a requested discipline catalog."""
         matches = await streamed_api.get_all_matches()
         items = []
@@ -111,11 +131,16 @@ class CatalogService:
                 if search.lower() not in title:
                     continue
 
-            items.append(self.build_meta_item(m, category_id, user_tz))
+            items.append(self.build_meta_item(m, category_id, user_tz, base_url=base_url))
 
         return items
 
-    async def get_meta_detail(self, item_id: str, user_tz: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    async def get_meta_detail(
+        self,
+        item_id: str,
+        user_tz: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Returns the detailed meta object for an event."""
         # item_id format: "category:slug-id" or "slug-id"
         if ":" in item_id:
@@ -127,7 +152,7 @@ class CatalogService:
         if not match:
             return None
 
-        meta = self.build_meta_item(match, category_id, user_tz)
+        meta = self.build_meta_item(match, category_id, user_tz, base_url=base_url)
         return meta
 
 catalog_service = CatalogService()
