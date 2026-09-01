@@ -1,3 +1,5 @@
+import asyncio
+import httpx
 import logging
 import urllib.parse
 from typing import Any, Dict, List, Optional
@@ -6,14 +8,21 @@ logger = logging.getLogger("easysports.replay")
 
 class ReplayService:
     """
-    Service responsible for generating and resolving Replay & Highlights streams
-    for completed matches (Football, Motor Sports, Tennis, Basketball, etc.).
-    All streams are routed through EasyProxy to bypass Geo-blocks and DNS blocks.
+    Service that searches and resolves REAL video streams for completed matches.
+    Uses YouTube InnerTube public API to fetch real highlight videos, titles, and durations,
+    and wraps them in EasyProxy extractor stream URLs.
     """
+
+    def __init__(self):
+        self._cache: Dict[str, List[Dict[str, Any]]] = {}
+        self._http_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Content-Type": "application/json",
+        }
 
     def clean_team_name(self, name: str) -> str:
         """Strips common suffixes and prefixes from team names."""
-        for word in ["FC", "CF", "Calcio", "AC", "SS", "AS", "U21", "U23", "BC", "HC"]:
+        for word in ["FC", "CF", "Calcio", "AC", "SS", "AS", "U21", "U23", "BC", "HC", "S.p.A."]:
             name = name.replace(f" {word}", "").replace(f"{word} ", "")
         return name.strip()
 
@@ -22,7 +31,6 @@ class ReplayService:
         title = match.get("title", "")
         category = (match.get("category") or "other").lower()
 
-        # Check teams object
         teams = match.get("teams", {})
         home = teams.get("home", {}).get("name", "")
         away = teams.get("away", {}).get("name", "")
@@ -43,13 +51,63 @@ class ReplayService:
         return self.clean_team_name(home), self.clean_team_name(away), category
 
     def build_easyproxy_link(self, ep_url: str, ep_pass: Optional[str], host: str, destination_url: str) -> str:
-        """Constructs an EasyProxy extractor stream link."""
+        """Constructs a valid EasyProxy extractor stream link."""
         base = ep_url.rstrip("/")
         encoded_d = urllib.parse.quote(destination_url, safe="")
         url = f"{base}/extractor/video.m3u8?host={host}&d={encoded_d}&redirect_stream=true"
         if ep_pass:
             url += f"&api_password={urllib.parse.quote(ep_pass)}"
         return url
+
+    async def search_youtube_innertube(self, query: str, max_results: int = 4) -> List[Dict[str, Any]]:
+        """
+        Searches YouTube using InnerTube API and returns structured video items.
+        """
+        url = "https://www.youtube.com/youtubei/v1/search"
+        payload = {
+            "context": {
+                "client": {
+                    "hl": "it",
+                    "gl": "IT",
+                    "clientName": "WEB",
+                    "clientVersion": "2.20230515.00.00",
+                }
+            },
+            "query": query
+        }
+
+        try:
+            async with httpx.AsyncClient(headers=self._http_headers, timeout=6.0) as client:
+                res = await client.post(url, json=payload)
+                if res.status_code == 200:
+                    data = res.json()
+                    sections = data.get("contents", {}).get("twoColumnSearchResultsRenderer", {}).get("primaryContents", {}).get("sectionListRenderer", {}).get("contents", [])
+                    results = []
+                    for sec in sections:
+                        items = sec.get("itemSectionRenderer", {}).get("contents", [])
+                        for it in items:
+                            if "videoRenderer" in it:
+                                vr = it["videoRenderer"]
+                                vid = vr.get("videoId")
+                                title_runs = vr.get("title", {}).get("runs", [])
+                                title = "".join(r.get("text", "") for r in title_runs)
+                                length = vr.get("lengthText", {}).get("simpleText", "")
+                                channel = "".join(r.get("text", "") for r in vr.get("ownerText", {}).get("runs", []))
+                                if vid:
+                                    results.append({
+                                        "videoId": vid,
+                                        "title": title,
+                                        "duration": length,
+                                        "channel": channel,
+                                        "url": f"https://www.youtube.com/watch?v={vid}"
+                                    })
+                                    if len(results) >= max_results:
+                                        return results
+                    return results
+        except Exception as e:
+            logger.warning("InnerTube YouTube search failed for '%s': %s", query, e)
+
+        return []
 
     async def get_replays_for_match(
         self,
@@ -58,142 +116,123 @@ class ReplayService:
         ep_pass: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
-        Generates structured replay and highlights streams for a completed match.
-        Prioritizes Italian official highlights, extended international highlights,
-        and full-match halves / full-race replays.
+        Resolves real video streams for a concluded match.
         """
+        if not ep_url:
+            return []
+
+        match_id = match.get("id", "")
+        if match_id in self._cache:
+            return self._cache[match_id]
+
         home, away, category = self.extract_search_terms(match)
         match_title = match.get("title", f"{home} vs {away}")
         replays: List[Dict[str, Any]] = []
 
-        if not ep_url:
-            return replays
-
         # ----------------------------------------------------
-        # 1. CALCIO (Football / Soccer)
+        # 1. CALCIO (Football)
         # ----------------------------------------------------
         if category in ["football", "soccer"]:
-            query_it = urllib.parse.quote(f"{home} {away} highlights sintesi Serie A")
-            query_ext = urllib.parse.quote(f"{home} vs {away} extended highlights")
-            soccercatch_url = f"https://soccercatch.com/search?q={urllib.parse.quote(home + ' ' + away)}"
+            query_it = f"{home} {away} highlights Serie A sintesi"
+            query_ext = f"{home} vs {away} extended highlights"
 
-            # 🇮🇹 Sintesi Ufficiale Italiana
-            replays.append({
-                "name": "🇮🇹 Sintesi Ufficiale",
-                "title": f"Sintesi in Italiano (Sky / DAZN / Serie A) • {match_title}",
-                "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", f"https://www.youtube.com/results?search_query={query_it}"),
-            })
+            videos_it, videos_ext = await asyncio.gather(
+                self.search_youtube_innertube(query_it, max_results=3),
+                self.search_youtube_innertube(query_ext, max_results=2),
+                return_exceptions=True
+            )
 
-            # 🎬 Highlights Estesi
-            replays.append({
-                "name": "🎬 Highlights Estesi 1080p",
-                "title": f"Sintesi estesa 10-15 min (CBS / TNT Sports) • {match_title}",
-                "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", f"https://www.youtube.com/results?search_query={query_ext}"),
-            })
+            seen_vids = set()
 
-            # ⚽ 1° Tempo Integrale (Replay)
-            replays.append({
-                "name": "⚽ 1° Tempo Integrale (Full HD)",
-                "title": f"Primo Tempo Completo (Full Match Replay) • {match_title}",
-                "url": self.build_easyproxy_link(ep_url, ep_pass, "generic", soccercatch_url),
-            })
+            if isinstance(videos_it, list):
+                for idx, v in enumerate(videos_it):
+                    if v["videoId"] not in seen_vids:
+                        seen_vids.add(v["videoId"])
+                        dur = f" ({v['duration']})" if v.get("duration") else ""
+                        channel = f" • {v['channel']}" if v.get("channel") else ""
+                        replays.append({
+                            "name": f"🇮🇹 Sintesi #{idx+1}{dur}",
+                            "title": f"{v['title']}{channel}",
+                            "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
+                            "behaviorHints": {"notWebReady": False}
+                        })
 
-            # ⚽ 2° Tempo Integrale (Replay)
-            replays.append({
-                "name": "⚽ 2° Tempo Integrale (Full HD)",
-                "title": f"Secondo Tempo Completo (Full Match Replay) • {match_title}",
-                "url": self.build_easyproxy_link(ep_url, ep_pass, "generic", soccercatch_url),
-            })
+            if isinstance(videos_ext, list):
+                for idx, v in enumerate(videos_ext):
+                    if v["videoId"] not in seen_vids:
+                        seen_vids.add(v["videoId"])
+                        dur = f" ({v['duration']})" if v.get("duration") else ""
+                        replays.append({
+                            "name": f"🎬 Extended Highlights #{idx+1}{dur}",
+                            "title": f"{v['title']}",
+                            "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
+                            "behaviorHints": {"notWebReady": False}
+                        })
 
         # ----------------------------------------------------
-        # 2. MOTORI (Motor Sports - F1, MotoGP, Superbike)
+        # 2. MOTORI (F1, MotoGP)
         # ----------------------------------------------------
         elif category in ["motor-sports", "motorsport", "f1", "motogp"]:
-            query_it = urllib.parse.quote(f"{match_title} sintesi gara Sky Sport")
-            query_ext = urllib.parse.quote(f"{match_title} race highlights")
-            fullraces_url = f"https://fullraces.com/?s={urllib.parse.quote(match_title)}"
-
-            # 🇮🇹 Sintesi Gara in Italiano
-            replays.append({
-                "name": "🇮🇹 Sintesi Gara (Sky Sport)",
-                "title": f"Highlights con commento italiano • {match_title}",
-                "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", f"https://www.youtube.com/results?search_query={query_it}"),
-            })
-
-            # 🏎️ Gara Completa (Full Replay)
-            replays.append({
-                "name": "🏎️ Gara Completa (Full Race Replay)",
-                "title": f"Gara integrale semaforo-bandiera a scacchi • {match_title}",
-                "url": self.build_easyproxy_link(ep_url, ep_pass, "generic", fullraces_url),
-            })
-
-            # ⏱️ Qualifiche Complete
-            replays.append({
-                "name": "⏱️ Qualifiche Complete (Replay)",
-                "title": f"Sessione di Qualifica integrale • {match_title}",
-                "url": self.build_easyproxy_link(ep_url, ep_pass, "generic", fullraces_url),
-            })
+            query = f"{match_title} gara sintesi Sky Sport F1 highlights"
+            videos = await self.search_youtube_innertube(query, max_results=4)
+            for idx, v in enumerate(videos):
+                dur = f" ({v['duration']})" if v.get("duration") else ""
+                channel = f" • {v['channel']}" if v.get("channel") else ""
+                label = f"🏎️ Sintesi Gara #{idx+1}{dur}"
+                replays.append({
+                    "name": label,
+                    "title": f"{v['title']}{channel}",
+                    "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
+                    "behaviorHints": {"notWebReady": False}
+                })
 
         # ----------------------------------------------------
         # 3. TENNIS
         # ----------------------------------------------------
         elif category == "tennis":
-            query_it = urllib.parse.quote(f"{home} {away} tennis highlights sintesi")
-            query_ext = urllib.parse.quote(f"{home} vs {away} match highlights")
-
-            # 🇮🇹 Sintesi Match
-            replays.append({
-                "name": "🇮🇹 Sintesi Match (SuperTennis/Sky)",
-                "title": f"Sintesi punti salienti • {match_title}",
-                "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", f"https://www.youtube.com/results?search_query={query_it}"),
-            })
-
-            # 🎬 Highlights Estesi
-            replays.append({
-                "name": "🎬 Highlights Tennis TV (1080p)",
-                "title": f"Sintesi ufficiale punto per punto • {match_title}",
-                "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", f"https://www.youtube.com/results?search_query={query_ext}"),
-            })
+            query = f"{home} {away} tennis highlights sintesi"
+            videos = await self.search_youtube_innertube(query, max_results=4)
+            for idx, v in enumerate(videos):
+                dur = f" ({v['duration']})" if v.get("duration") else ""
+                replays.append({
+                    "name": f"🎾 Highlights Match #{idx+1}{dur}",
+                    "title": f"{v['title']}",
+                    "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
+                    "behaviorHints": {"notWebReady": False}
+                })
 
         # ----------------------------------------------------
-        # 4. BASKET (Basketball - NBA, LBA, Euroleague)
+        # 4. BASKET (Basketball)
         # ----------------------------------------------------
         elif category == "basketball":
-            query_it = urllib.parse.quote(f"{home} {away} basket highlights LBA Sky Sport")
-            query_ext = urllib.parse.quote(f"{home} vs {away} full game highlights NBA")
-            nbareplay_url = f"https://nbahdreplay.com/?s={urllib.parse.quote(home + ' ' + away)}"
-
-            # 🇮🇹 Sintesi Basket
-            replays.append({
-                "name": "🇮🇹 Sintesi Basket (Sky/LBA)",
-                "title": f"Sintesi e azioni spettacolari • {match_title}",
-                "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", f"https://www.youtube.com/results?search_query={query_it}"),
-            })
-
-            # 🏀 Full Game Replay (4 Quarti)
-            replays.append({
-                "name": "🏀 Partita Integrale (Full Game Replay)",
-                "title": f"Registrazione completa 4 quarti HD • {match_title}",
-                "url": self.build_easyproxy_link(ep_url, ep_pass, "generic", nbareplay_url),
-            })
+            query = f"{home} {away} basket highlights LBA NBA"
+            videos = await self.search_youtube_innertube(query, max_results=4)
+            for idx, v in enumerate(videos):
+                dur = f" ({v['duration']})" if v.get("duration") else ""
+                replays.append({
+                    "name": f"🏀 Sintesi Basket #{idx+1}{dur}",
+                    "title": f"{v['title']}",
+                    "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
+                    "behaviorHints": {"notWebReady": False}
+                })
 
         # ----------------------------------------------------
-        # 5. ALTRI SPORT (Rugby, Boxe, Baseball, Hockey, etc.)
+        # 5. ALTRI SPORT
         # ----------------------------------------------------
         else:
-            query_it = urllib.parse.quote(f"{home} {away} sintesi highlights")
-            query_ext = urllib.parse.quote(f"{home} vs {away} full match highlights")
+            query = f"{match_title} highlights recap"
+            videos = await self.search_youtube_innertube(query, max_results=4)
+            for idx, v in enumerate(videos):
+                dur = f" ({v['duration']})" if v.get("duration") else ""
+                replays.append({
+                    "name": f"🎬 Highlights #{idx+1}{dur}",
+                    "title": f"{v['title']}",
+                    "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
+                    "behaviorHints": {"notWebReady": False}
+                })
 
-            replays.append({
-                "name": "🇮🇹 Sintesi & Highlights",
-                "title": f"Highlights e momenti clou • {match_title}",
-                "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", f"https://www.youtube.com/results?search_query={query_it}"),
-            })
-            replays.append({
-                "name": "🎬 Extended Highlights (1080p)",
-                "title": f"Extended match recap • {match_title}",
-                "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", f"https://www.youtube.com/results?search_query={query_ext}"),
-            })
+        if replays:
+            self._cache[match_id] = replays
 
         return replays
 
