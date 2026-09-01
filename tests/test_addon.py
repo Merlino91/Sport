@@ -99,5 +99,35 @@ class EasySportsTestCase(unittest.TestCase):
         card_ended = stream_service.generate_status_card(ended_match, "Europe/Rome")
         self.assertTrue(any("🏁" in c["name"] for c in card_ended))
 
+    def test_replay_service_generation(self):
+        import asyncio
+        from app.services.replay_service import replay_service
+        
+        sample_football_match = {
+            "id": "torino-vs-monza-2577931",
+            "title": "Torino vs Monza",
+            "category": "football",
+            "teams": {"home": {"name": "Torino FC"}, "away": {"name": "Monza"}},
+        }
+        replays = asyncio.run(replay_service.get_replays_for_match(sample_football_match, ep_url="https://ep.example.com", ep_pass="pass"))
+        self.assertGreater(len(replays), 0)
+        self.assertTrue(any("🇮🇹" in r["name"] for r in replays))
+        self.assertTrue(any("1° Tempo" in r["name"] for r in replays))
+        self.assertTrue(all("https://ep.example.com/extractor/video.m3u8" in r["url"] for r in replays))
+
+    def test_streamed_api_history_pruning(self):
+        import time
+        from app.services.streamed_api import streamed_api, HISTORY_RETENTION_MS
+        now_ms = time.time() * 1000
+        
+        test_matches = [
+            {"id": "fresh-1", "title": "Fresh Match", "date": now_ms - 3600000},
+            {"id": "old-1", "title": "Very Old Match", "date": now_ms - (HISTORY_RETENTION_MS + 10000000)},
+        ]
+        merged = streamed_api._prune_and_merge(test_matches)
+        merged_ids = [m["id"] for m in merged]
+        self.assertIn("fresh-1", merged_ids)
+        self.assertNotIn("old-1", merged_ids)
+
 if __name__ == "__main__":
     unittest.main()
