@@ -79,6 +79,23 @@ def decode_config(config_str: Optional[str]) -> Tuple[Optional[str], Optional[st
         return None, None, "UTC"
 
 
+def get_base_url(request: Request) -> str:
+    """
+    Extracts the correct public base URL respecting reverse proxy headers
+    (X-Forwarded-Proto, X-Forwarded-Host from Traefik/Dokploy/Cloudflare).
+    """
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+    
+    # Remove standard ports if present
+    if proto == "https" and host.endswith(":443"):
+        host = host[:-4]
+    elif proto == "http" and host.endswith(":80"):
+        host = host[:-3]
+        
+    return f"{proto}://{host}".rstrip("/")
+
+
 def build_manifest(configured: bool = False) -> dict:
     """Builds the Stremio Addon manifest."""
     catalogs = []
@@ -130,8 +147,8 @@ async def configure_page(
         raw_config = f"{epUrl.strip()}|{ep_pass_clean.strip()}|{tz_clean.strip()}"
         encoded_config = base64.b64encode(raw_config.encode("utf-8")).decode("utf-8")
         
-        # Build URLs
-        base_url = str(request.base_url).rstrip("/")
+        # Build URLs with correct public scheme and host
+        base_url = get_base_url(request)
         install_url = f"{base_url}/{encoded_config}/manifest.json"
         stremio_url = install_url.replace("http://", "stremio://").replace("https://", "stremio://")
 
@@ -173,7 +190,7 @@ async def configured_manifest(config: str):
 async def catalog_endpoint(request: Request, config: str, type: str, id: str, extra: Optional[str] = None):
     """Catalog endpoint returning live sports matches for a discipline."""
     _, _, user_tz = decode_config(config)
-    base_url = str(request.base_url).rstrip("/")
+    base_url = get_base_url(request)
 
     search_query = None
     if extra:
@@ -189,7 +206,7 @@ async def catalog_endpoint(request: Request, config: str, type: str, id: str, ex
 async def meta_endpoint(request: Request, config: str, type: str, id: str):
     """Meta detail endpoint for a specific match card."""
     _, _, user_tz = decode_config(config)
-    base_url = str(request.base_url).rstrip("/")
+    base_url = get_base_url(request)
     meta = await catalog_service.get_meta_detail(id, user_tz=user_tz, base_url=base_url)
     if not meta:
         raise HTTPException(status_code=404, detail="Meta not found")
@@ -202,7 +219,11 @@ async def image_proxy_endpoint(url: str):
     if not url:
         raise HTTPException(status_code=400, detail="Missing url parameter")
 
-    content, content_type = await doh_client.get_raw(url)
+    target_url = url.strip()
+    if not target_url.startswith("http://") and not target_url.startswith("https://"):
+        target_url = f"https://{STREAMED_API_HOST}{target_url if target_url.startswith('/') else '/' + target_url}"
+
+    content, content_type = await doh_client.get_raw(target_url)
     if not content:
         raise HTTPException(status_code=404, detail="Image not found")
 
