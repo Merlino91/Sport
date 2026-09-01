@@ -84,5 +84,20 @@ class EasySportsTestCase(unittest.TestCase):
         self.assertIn("https://mysports.com/image-proxy?url=", proxied_url)
         self.assertIn("streamed.pk", proxied_url)
 
+    def test_stream_time_window_cards(self):
+        import time
+        now_ms = time.time() * 1000
+        
+        # Match 2 hours in the future (> 20 min)
+        future_match = {"id": "test-future", "date": now_ms + 7200000}
+        card_future = stream_service.generate_status_card(future_match, "Europe/Rome")
+        self.assertTrue(any("⏳" in c["name"] for c in card_future))
+        self.assertTrue(card_future[0]["behaviorHints"]["notWebReady"])
+
+        # Match 4 hours in the past (< -180 min)
+        ended_match = {"id": "test-ended", "date": now_ms - 14400000}
+        card_ended = stream_service.generate_status_card(ended_match, "Europe/Rome")
+        self.assertTrue(any("🏁" in c["name"] for c in card_ended))
+
 if __name__ == "__main__":
     unittest.main()
