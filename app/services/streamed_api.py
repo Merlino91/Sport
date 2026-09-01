@@ -1,24 +1,86 @@
+import json
 import logging
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from app.config import STREAMED_API_HOST, STREAMED_CACHE_TTL
 from app.services.doh_client import doh_client
 
 logger = logging.getLogger("easysports.streamed")
 
+# 72 hours retention in milliseconds
+HISTORY_RETENTION_MS = 72 * 3600 * 1000
+
 class StreamedAPI:
     """
     Client for the Streamed sports events and streams API.
-    Caches match lists to avoid overloading upstream API.
+    Caches match lists and maintains a 72-hour rolling history of completed matches
+    so that recaps and replays remain accessible after matches end.
     """
 
     def __init__(self):
         self._matches_cache: List[Dict[str, Any]] = []
         self._cache_timestamp: float = 0
         self._base_host = STREAMED_API_HOST
+        
+        # History file storage in app data directory
+        self._data_dir = Path(__file__).resolve().parent.parent / "data"
+        self._history_file = self._data_dir / "recent_matches.json"
+        self._matches_history: Dict[str, Dict[str, Any]] = self._load_history()
+
+    def _load_history(self) -> Dict[str, Dict[str, Any]]:
+        """Loads historical matches from local storage."""
+        if self._history_file.exists():
+            try:
+                with open(self._history_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        return data
+            except Exception as e:
+                logger.warning("Could not read recent matches history: %s", e)
+        return {}
+
+    def _save_history(self):
+        """Persists historical matches to local storage."""
+        try:
+            self._data_dir.mkdir(parents=True, exist_ok=True)
+            with open(self._history_file, "w", encoding="utf-8") as f:
+                json.dump(self._matches_history, f, ensure_ascii=False)
+        except Exception as e:
+            logger.warning("Could not save recent matches history: %s", e)
+
+    def _prune_and_merge(self, fresh_matches: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Merges fresh matches with historical completed matches from the last 72 hours,
+        pruning entries older than 72 hours.
+        """
+        now_ms = time.time() * 1000
+        cutoff_ms = now_ms - HISTORY_RETENTION_MS
+
+        # Add / update with fresh matches
+        for m in fresh_matches:
+            mid = m.get("id")
+            if mid:
+                self._matches_history[mid] = m
+
+        # Prune old matches (< cutoff)
+        pruned_history = {}
+        for mid, m in self._matches_history.items():
+            date_ms = m.get("date", 0)
+            # Keep if no date or within last 72 hours or future
+            if not date_ms or date_ms >= cutoff_ms:
+                pruned_history[mid] = m
+
+        self._matches_history = pruned_history
+        self._save_history()
+
+        # Return list sorted chronologically
+        merged_list = list(self._matches_history.values())
+        merged_list.sort(key=lambda x: x.get("date", 0))
+        return merged_list
 
     async def get_all_matches(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
-        """Returns all matches, using in-memory cache if fresh."""
+        """Returns all matches (live, upcoming, and recent completed within 72h)."""
         now = time.time()
         if not force_refresh and self._matches_cache and (now - self._cache_timestamp < STREAMED_CACHE_TTL):
             return self._matches_cache
@@ -26,15 +88,18 @@ class StreamedAPI:
         url = f"https://{self._base_host}/api/matches/all"
         data = await doh_client.get_json(url, host_header=self._base_host)
         if isinstance(data, list):
-            self._matches_cache = data
+            merged = self._prune_and_merge(data)
+            self._matches_cache = merged
             self._cache_timestamp = now
-            logger.info("Loaded %d matches from Streamed API", len(data))
-            return data
+            logger.info("Total matches (active + 72h history): %d", len(merged))
+            return merged
 
-        # Fallback to existing cache if refresh failed
+        # Fallback to existing cache / history
         if self._matches_cache:
-            logger.warning("Upstream refresh failed, using stale cache (%d items)", len(self._matches_cache))
             return self._matches_cache
+
+        if self._matches_history:
+            return list(self._matches_history.values())
 
         return []
 
@@ -51,8 +116,7 @@ class StreamedAPI:
 
     async def find_match_by_slug_and_id(self, slug_or_id: str) -> Optional[Dict[str, Any]]:
         """
-        Finds a match in the match list by full ID (e.g. 'cincinnati-reds-vs-san-diego-padres-2388957')
-        or numeric/suffix ID.
+        Finds a match in the match list or history by full ID or suffix.
         """
         matches = await self.get_all_matches()
         # Direct ID match
