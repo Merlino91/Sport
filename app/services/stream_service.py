@@ -2,7 +2,6 @@ import logging
 import time
 import urllib.parse
 from typing import Any, Dict, List, Optional
-from app.services.replay_service import replay_service
 from app.services.streamed_api import streamed_api
 
 logger = logging.getLogger("easysports.stream")
@@ -180,7 +179,7 @@ class StreamService:
         """
         Resolves streams for an event ID and formats them for Stremio.
         Enforces time-window rules: hides streams until 20 min before start,
-        and marks event as ended 3 hours after start.
+        and marks concluded matches as finished.
         """
         if not ep_url:
             return [
@@ -202,7 +201,7 @@ class StreamService:
         if not match:
             return self.generate_status_card(None, user_tz)
 
-        # Time-window check: hide streams if > 20 min before start or route to replays if > 3 hours after start
+        # Time-window check: hide streams if > 20 min before start or show Evento Terminato if > 3h after start
         date_ms = match.get("date", 0)
         if date_ms:
             now_ms = time.time() * 1000
@@ -212,11 +211,8 @@ class StreamService:
             if diff_mins > 20:
                 return self.generate_status_card(match, user_tz)
 
-            # More than 3 hours (180 min) after start -> return Replays & Highlights
+            # More than 3 hours after start -> show Evento Terminato card
             if diff_mins < -180:
-                replays = await replay_service.get_replays_for_match(match, ep_url=ep_url, ep_pass=ep_pass)
-                if replays:
-                    return replays
                 return self.generate_status_card(match, user_tz)
 
         sources = match.get("sources", [])
