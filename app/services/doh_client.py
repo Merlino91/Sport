@@ -9,7 +9,7 @@ logger = logging.getLogger("easysports.doh")
 class DoHClient:
     """
     HTTP Client with built-in DNS-over-HTTPS resolution to bypass local/ISP DNS blocks.
-    Caches resolved IP addresses and performs direct HTTPS requests with correct Host header & SNI.
+    Uses a single shared connection pool with strict memory and socket limits.
     """
 
     def __init__(self):
@@ -18,10 +18,20 @@ class DoHClient:
             "https://cloudflare-dns.com/dns-query",
             "https://dns.google/resolve",
         ]
-        # Insecure SSL context for cases where upstream cert CN doesn't match raw IP during custom SNI routing
+        # Insecure SSL context for upstream routing
         self._ssl_context = ssl.create_default_context()
         self._ssl_context.check_hostname = False
         self._ssl_context.verify_mode = ssl.CERT_NONE
+
+        # Shared singleton transport and client with strict connection pooling
+        self._limits = httpx.Limits(max_keepalive_connections=15, max_connections=30, keepalive_expiry=30.0)
+        self._transport = httpx.AsyncHTTPTransport(verify=self._ssl_context, limits=self._limits)
+        self._client = httpx.AsyncClient(transport=self._transport, timeout=httpx.Timeout(8.0, connect=4.0))
+
+    async def close(self):
+        """Closes the underlying shared HTTP client."""
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
 
     async def resolve(self, hostname: str) -> Optional[str]:
         """Resolves hostname to IPv4 using DoH resolvers with TTL caching."""
@@ -31,30 +41,29 @@ class DoHClient:
             if now < expire_at:
                 return ip
 
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            for endpoint in self._doh_endpoints:
-                try:
-                    params = {"name": hostname, "type": "A"}
-                    headers = {"accept": "application/dns-json"}
-                    res = await client.get(endpoint, params=params, headers=headers)
-                    if res.status_code == 200:
-                        data = res.json()
-                        answers = data.get("Answer", [])
-                        for ans in answers:
-                            if ans.get("type") == 1 and "data" in ans:
-                                ip = ans["data"]
-                                ttl = ans.get("TTL", 300)
-                                self._dns_cache[hostname] = (ip, now + min(ttl, 600))
-                                logger.debug("DoH resolved %s -> %s (TTL: %ds)", hostname, ip, ttl)
-                                return ip
-                except Exception as e:
-                    logger.warning("DoH lookup via %s failed for %s: %s", endpoint, hostname, e)
+        for endpoint in self._doh_endpoints:
+            try:
+                params = {"name": hostname, "type": "A"}
+                headers = {"accept": "application/dns-json"}
+                res = await self._client.get(endpoint, params=params, headers=headers)
+                if res.status_code == 200:
+                    data = res.json()
+                    answers = data.get("Answer", [])
+                    for ans in answers:
+                        if ans.get("type") == 1 and "data" in ans:
+                            ip = ans["data"]
+                            ttl = ans.get("TTL", 300)
+                            self._dns_cache[hostname] = (ip, now + min(ttl, 600))
+                            logger.debug("DoH resolved %s -> %s (TTL: %ds)", hostname, ip, ttl)
+                            return ip
+            except Exception as e:
+                logger.warning("DoH lookup via %s failed for %s: %s", endpoint, hostname, e)
 
         return None
 
-    async def get_json(self, url: str, host_header: Optional[str] = None, timeout: float = 10.0) -> Optional[dict]:
+    async def get_json(self, url: str, host_header: Optional[str] = None, timeout: float = 8.0) -> Optional[dict]:
         """
-        Executes an HTTP GET request resolving host via DoH when necessary.
+        Executes an HTTP GET request resolving host via DoH using shared client.
         """
         parsed = httpx.URL(url)
         hostname = parsed.host
@@ -67,21 +76,20 @@ class DoHClient:
         }
 
         if resolved_ip and resolved_ip != hostname:
-            # Replace hostname with resolved IP in URL and set Host header
             target_url = str(parsed.copy_with(host=resolved_ip))
             headers["Host"] = host_header or hostname
 
-        transport = httpx.AsyncHTTPTransport(verify=self._ssl_context)
-        async with httpx.AsyncClient(transport=transport, timeout=timeout) as client:
-            try:
-                response = await client.get(target_url, headers=headers)
-                if response.status_code == 200:
-                    return response.json()
-                logger.warning("Request to %s returned status %d", url, response.status_code)
-            except Exception as e:
-                logger.error("Failed requesting %s: %s", url, e)
+        try:
+            response = await self._client.get(target_url, headers=headers, timeout=timeout)
+            if response.status_code == 200:
+                return response.json()
+            logger.warning("Request to %s returned status %d", url, response.status_code)
+        except Exception as e:
+            logger.error("Failed requesting %s: %s", url, e)
 
-    async def get_raw(self, url: str, host_header: Optional[str] = None, timeout: float = 10.0) -> Tuple[Optional[bytes], Optional[str]]:
+        return None
+
+    async def get_raw(self, url: str, host_header: Optional[str] = None, timeout: float = 8.0) -> Tuple[Optional[bytes], Optional[str]]:
         """
         Executes an HTTP GET request resolving host via DoH and returns raw bytes and content-type.
         """
@@ -99,16 +107,14 @@ class DoHClient:
             target_url = str(parsed.copy_with(host=resolved_ip))
             headers["Host"] = host_header or hostname
 
-        transport = httpx.AsyncHTTPTransport(verify=self._ssl_context)
-        async with httpx.AsyncClient(transport=transport, timeout=timeout) as client:
-            try:
-                response = await client.get(target_url, headers=headers)
-                if response.status_code == 200:
-                    content_type = response.headers.get("content-type", "image/webp")
-                    return response.content, content_type
-                logger.warning("Raw request to %s returned status %d", url, response.status_code)
-            except Exception as e:
-                logger.error("Failed raw request to %s: %s", url, e)
+        try:
+            response = await self._client.get(target_url, headers=headers, timeout=timeout)
+            if response.status_code == 200:
+                content_type = response.headers.get("content-type", "image/webp")
+                return response.content, content_type
+            logger.warning("Raw request to %s returned status %d", url, response.status_code)
+        except Exception as e:
+            logger.error("Failed raw request to %s: %s", url, e)
 
         return None, None
 
