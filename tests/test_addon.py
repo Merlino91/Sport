@@ -109,10 +109,10 @@ class EasySportsTestCase(unittest.TestCase):
             "category": "football",
             "teams": {"home": {"name": "Torino FC"}, "away": {"name": "Monza"}},
         }
-        replays = asyncio.run(replay_service.get_replays_for_match(sample_football_match))
+        replays = asyncio.run(replay_service.get_replays_for_match(sample_football_match, ep_url="https://ep.example.com", ep_pass="pass"))
         self.assertGreater(len(replays), 0)
         self.assertTrue(any("🇮🇹" in r["name"] for r in replays))
-        self.assertTrue(all("ytId" in r for r in replays))
+        self.assertTrue(all("https://ep.example.com/extractor/video.m3u8?host=youtube" in r["url"] for r in replays))
 
     def test_streamed_api_history_pruning(self):
         import time
