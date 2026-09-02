@@ -180,7 +180,7 @@ class StreamService:
         """
         Resolves streams for an event ID and formats them for Stremio.
         Enforces time-window rules: hides streams until 20 min before start,
-        and routes concluded matches to replay_service.
+        and marks event as ended 3 hours after start.
         """
         if not ep_url:
             return [
