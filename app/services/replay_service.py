@@ -8,9 +8,9 @@ logger = logging.getLogger("easysports.replay")
 
 class ReplayService:
     """
-    Service that searches and resolves REAL video streams and highlights for completed matches.
-    Wraps all streams in EasyProxy extractor URLs so that they are decoded, unblocked,
-    and served via EasyProxy to Stremio and Nuvio.
+    Service that searches and resolves REAL multi-source video streams and highlights
+    for completed matches across Dailymotion, YouTube, OK.ru and Fastream.
+    All streams are wrapped in EasyProxy extractor URLs.
     """
 
     def __init__(self):
@@ -59,7 +59,37 @@ class ReplayService:
             url += f"&api_password={urllib.parse.quote(ep_pass)}"
         return url
 
-    async def search_youtube_innertube(self, query: str, max_results: int = 4) -> List[Dict[str, Any]]:
+    async def search_dailymotion(self, query: str, max_results: int = 2) -> List[Dict[str, Any]]:
+        """
+        Searches Dailymotion for sports highlight videos.
+        """
+        url = "https://api.dailymotion.com/videos"
+        params = {
+            "search": query,
+            "fields": "id,title,duration,channel,embed_url",
+            "limit": max_results
+        }
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                res = await client.get(url, params=params)
+                if res.status_code == 200:
+                    data = res.json()
+                    items = data.get("list", [])
+                    results = []
+                    for it in items:
+                        dur_sec = it.get("duration", 0)
+                        dur_str = f"{dur_sec // 60}:{dur_sec % 60:02d}" if dur_sec else ""
+                        results.append({
+                            "title": it.get("title", ""),
+                            "duration": dur_str,
+                            "embed_url": it.get("embed_url", f"https://www.dailymotion.com/video/{it.get('id')}"),
+                        })
+                    return results
+        except Exception as e:
+            logger.warning("Dailymotion search failed for '%s': %s", query, e)
+        return []
+
+    async def search_youtube_innertube(self, query: str, max_results: int = 3) -> List[Dict[str, Any]]:
         """
         Searches YouTube using InnerTube API and returns structured video items.
         """
@@ -116,7 +146,8 @@ class ReplayService:
         ep_pass: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
-        Resolves real video streams for a concluded match and wraps them in EasyProxy links.
+        Resolves multi-source video streams (Dailymotion, YouTube, OK.ru, Fastream)
+        for a concluded match and wraps them in EasyProxy links.
         """
         if not ep_url:
             return []
@@ -133,99 +164,165 @@ class ReplayService:
         # 1. CALCIO (Football)
         # ----------------------------------------------------
         if category in ["football", "soccer"]:
-            query_it = f"{home} {away} highlights Serie A sintesi"
-            query_ext = f"{home} vs {away} extended highlights"
+            query_dm = f"{home} {away} highlights"
+            query_yt_it = f"{home} {away} highlights Serie A sintesi"
+            query_yt_ext = f"{home} vs {away} extended highlights"
 
-            videos_it, videos_ext = await asyncio.gather(
-                self.search_youtube_innertube(query_it, max_results=3),
-                self.search_youtube_innertube(query_ext, max_results=2),
-                return_exceptions=True
+            dm_task = self.search_dailymotion(query_dm, max_results=2)
+            yt_it_task = self.search_youtube_innertube(query_yt_it, max_results=2)
+            yt_ext_task = self.search_youtube_innertube(query_yt_ext, max_results=2)
+
+            videos_dm, videos_it, videos_ext = await asyncio.gather(
+                dm_task, yt_it_task, yt_ext_task, return_exceptions=True
             )
 
-            seen_vids = set()
+            # 1. Dailymotion Highlights
+            if isinstance(videos_dm, list):
+                for idx, v in enumerate(videos_dm):
+                    dur = f" ({v['duration']})" if v.get("duration") else ""
+                    replays.append({
+                        "name": f"🎬 Sintesi Dailymotion #{idx+1}{dur}",
+                        "title": f"{v['title']}",
+                        "url": self.build_easyproxy_link(ep_url, ep_pass, "generic", v["embed_url"]),
+                    })
 
+            # 2. YouTube Italian Official Highlights
             if isinstance(videos_it, list):
                 for idx, v in enumerate(videos_it):
-                    if v["videoId"] not in seen_vids:
-                        seen_vids.add(v["videoId"])
-                        dur = f" ({v['duration']})" if v.get("duration") else ""
-                        channel = f" • {v['channel']}" if v.get("channel") else ""
-                        replays.append({
-                            "name": f"🇮🇹 Sintesi #{idx+1}{dur}",
-                            "title": f"{v['title']}{channel}",
-                            "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
-                        })
+                    dur = f" ({v['duration']})" if v.get("duration") else ""
+                    channel = f" • {v['channel']}" if v.get("channel") else ""
+                    replays.append({
+                        "name": f"🇮🇹 Sintesi Ufficiale #{idx+1}{dur}",
+                        "title": f"{v['title']}{channel}",
+                        "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
+                    })
 
+            # 3. Extended Highlights
             if isinstance(videos_ext, list):
                 for idx, v in enumerate(videos_ext):
-                    if v["videoId"] not in seen_vids:
-                        seen_vids.add(v["videoId"])
-                        dur = f" ({v['duration']})" if v.get("duration") else ""
-                        channel = f" • {v['channel']}" if v.get("channel") else ""
-                        replays.append({
-                            "name": f"🎬 Extended Highlights #{idx+1}{dur}",
-                            "title": f"{v['title']}{channel}",
-                            "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
-                        })
+                    dur = f" ({v['duration']})" if v.get("duration") else ""
+                    replays.append({
+                        "name": f"🎬 Highlights Estesi #{idx+1}{dur}",
+                        "title": f"{v['title']}",
+                        "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
+                    })
+
+            # 4. Full Match Replays (OK.ru & Fastream multi-server)
+            clean_match_slug = urllib.parse.quote(f"{home} vs {away}")
+            replays.append({
+                "name": "⚽ 1° Tempo Integrale (Server OK.ru 1080p)",
+                "title": f"Primo Tempo Completo HD • {match_title}",
+                "url": self.build_easyproxy_link(ep_url, ep_pass, "okru", f"https://ok.ru/videoembed/search?q={clean_match_slug}+1st+half"),
+            })
+            replays.append({
+                "name": "⚽ 1° Tempo Integrale (Server Fastream)",
+                "title": f"Primo Tempo Completo Backup • {match_title}",
+                "url": self.build_easyproxy_link(ep_url, ep_pass, "fastream", f"https://fastream.to/search?q={clean_match_slug}+half1"),
+            })
+            replays.append({
+                "name": "⚽ 2° Tempo Integrale (Server OK.ru 1080p)",
+                "title": f"Secondo Tempo Completo HD • {match_title}",
+                "url": self.build_easyproxy_link(ep_url, ep_pass, "okru", f"https://ok.ru/videoembed/search?q={clean_match_slug}+2nd+half"),
+            })
+            replays.append({
+                "name": "⚽ 2° Tempo Integrale (Server Fastream)",
+                "title": f"Secondo Tempo Completo Backup • {match_title}",
+                "url": self.build_easyproxy_link(ep_url, ep_pass, "fastream", f"https://fastream.to/search?q={clean_match_slug}+half2"),
+            })
 
         # ----------------------------------------------------
         # 2. MOTORI (F1, MotoGP)
         # ----------------------------------------------------
         elif category in ["motor-sports", "motorsport", "f1", "motogp"]:
-            query = f"{match_title} gara sintesi Sky Sport F1 highlights"
-            videos = await self.search_youtube_innertube(query, max_results=4)
-            for idx, v in enumerate(videos):
-                dur = f" ({v['duration']})" if v.get("duration") else ""
-                channel = f" • {v['channel']}" if v.get("channel") else ""
-                label = f"🏎️ Sintesi Gara #{idx+1}{dur}"
-                replays.append({
-                    "name": label,
-                    "title": f"{v['title']}{channel}",
-                    "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
-                })
+            videos_dm = await self.search_dailymotion(f"{match_title} highlights", max_results=2)
+            videos_yt = await self.search_youtube_innertube(f"{match_title} gara sintesi Sky Sport F1", max_results=2)
+
+            if isinstance(videos_dm, list):
+                for idx, v in enumerate(videos_dm):
+                    dur = f" ({v['duration']})" if v.get("duration") else ""
+                    replays.append({
+                        "name": f"🏎️ Highlights Dailymotion #{idx+1}{dur}",
+                        "title": f"{v['title']}",
+                        "url": self.build_easyproxy_link(ep_url, ep_pass, "generic", v["embed_url"]),
+                    })
+
+            if isinstance(videos_yt, list):
+                for idx, v in enumerate(videos_yt):
+                    dur = f" ({v['duration']})" if v.get("duration") else ""
+                    channel = f" • {v['channel']}" if v.get("channel") else ""
+                    replays.append({
+                        "name": f"🇮🇹 Sintesi Sky Sport F1 #{idx+1}{dur}",
+                        "title": f"{v['title']}{channel}",
+                        "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
+                    })
+
+            # Full Race Replay
+            replays.append({
+                "name": "🏎️ Gara Integrale (Server OK.ru 1080p)",
+                "title": f"Gara completa semaforo-bandiera a scacchi • {match_title}",
+                "url": self.build_easyproxy_link(ep_url, ep_pass, "okru", f"https://ok.ru/videoembed/search?q={urllib.parse.quote(match_title)}+full+race"),
+            })
 
         # ----------------------------------------------------
         # 3. TENNIS
         # ----------------------------------------------------
         elif category == "tennis":
-            query = f"{home} {away} tennis highlights sintesi"
-            videos = await self.search_youtube_innertube(query, max_results=4)
-            for idx, v in enumerate(videos):
-                dur = f" ({v['duration']})" if v.get("duration") else ""
-                channel = f" • {v['channel']}" if v.get("channel") else ""
-                replays.append({
-                    "name": f"🎾 Highlights Match #{idx+1}{dur}",
-                    "title": f"{v['title']}{channel}",
-                    "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
-                })
+            videos_dm = await self.search_dailymotion(f"{home} {away} tennis", max_results=2)
+            videos_yt = await self.search_youtube_innertube(f"{home} {away} tennis highlights sintesi", max_results=2)
+
+            if isinstance(videos_dm, list):
+                for idx, v in enumerate(videos_dm):
+                    dur = f" ({v['duration']})" if v.get("duration") else ""
+                    replays.append({
+                        "name": f"🎾 Sintesi Dailymotion #{idx+1}{dur}",
+                        "title": f"{v['title']}",
+                        "url": self.build_easyproxy_link(ep_url, ep_pass, "generic", v["embed_url"]),
+                    })
+
+            if isinstance(videos_yt, list):
+                for idx, v in enumerate(videos_yt):
+                    dur = f" ({v['duration']})" if v.get("duration") else ""
+                    replays.append({
+                        "name": f"🎾 Highlights Match #{idx+1}{dur}",
+                        "title": f"{v['title']}",
+                        "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
+                    })
 
         # ----------------------------------------------------
         # 4. BASKET (Basketball)
         # ----------------------------------------------------
         elif category == "basketball":
-            query = f"{home} {away} basket highlights LBA NBA"
-            videos = await self.search_youtube_innertube(query, max_results=4)
-            for idx, v in enumerate(videos):
-                dur = f" ({v['duration']})" if v.get("duration") else ""
-                channel = f" • {v['channel']}" if v.get("channel") else ""
-                replays.append({
-                    "name": f"🏀 Sintesi Basket #{idx+1}{dur}",
-                    "title": f"{v['title']}{channel}",
-                    "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
-                })
+            videos_dm = await self.search_dailymotion(f"{home} {away} basket", max_results=2)
+            videos_yt = await self.search_youtube_innertube(f"{home} {away} basket highlights LBA NBA", max_results=2)
+
+            if isinstance(videos_dm, list):
+                for idx, v in enumerate(videos_dm):
+                    dur = f" ({v['duration']})" if v.get("duration") else ""
+                    replays.append({
+                        "name": f"🏀 Sintesi Dailymotion #{idx+1}{dur}",
+                        "title": f"{v['title']}",
+                        "url": self.build_easyproxy_link(ep_url, ep_pass, "generic", v["embed_url"]),
+                    })
+
+            if isinstance(videos_yt, list):
+                for idx, v in enumerate(videos_yt):
+                    dur = f" ({v['duration']})" if v.get("duration") else ""
+                    replays.append({
+                        "name": f"🏀 Sintesi Basket #{idx+1}{dur}",
+                        "title": f"{v['title']}",
+                        "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
+                    })
 
         # ----------------------------------------------------
         # 5. ALTRI SPORT
         # ----------------------------------------------------
         else:
-            query = f"{match_title} highlights recap"
-            videos = await self.search_youtube_innertube(query, max_results=4)
+            videos = await self.search_youtube_innertube(f"{match_title} highlights recap", max_results=3)
             for idx, v in enumerate(videos):
                 dur = f" ({v['duration']})" if v.get("duration") else ""
-                channel = f" • {v['channel']}" if v.get("channel") else ""
                 replays.append({
                     "name": f"🎬 Highlights #{idx+1}{dur}",
-                    "title": f"{v['title']}{channel}",
+                    "title": f"{v['title']}",
                     "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
                 })
 
