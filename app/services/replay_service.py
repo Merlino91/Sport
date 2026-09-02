@@ -8,9 +8,8 @@ logger = logging.getLogger("easysports.replay")
 
 class ReplayService:
     """
-    Service that searches and resolves REAL video streams for completed matches.
-    Uses YouTube InnerTube public API to fetch real highlight videos, titles, and durations,
-    and wraps them in EasyProxy extractor stream URLs.
+    Service that searches and resolves REAL video streams and highlights for completed matches.
+    Uses YouTube InnerTube public API and returns native Stremio ytId items for instant playback.
     """
 
     def __init__(self):
@@ -49,15 +48,6 @@ class ReplayService:
                 away = ""
 
         return self.clean_team_name(home), self.clean_team_name(away), category
-
-    def build_easyproxy_link(self, ep_url: str, ep_pass: Optional[str], host: str, destination_url: str) -> str:
-        """Constructs a valid EasyProxy extractor stream link."""
-        base = ep_url.rstrip("/")
-        encoded_d = urllib.parse.quote(destination_url, safe="")
-        url = f"{base}/extractor/video.m3u8?host={host}&d={encoded_d}&redirect_stream=true"
-        if ep_pass:
-            url += f"&api_password={urllib.parse.quote(ep_pass)}"
-        return url
 
     async def search_youtube_innertube(self, query: str, max_results: int = 4) -> List[Dict[str, Any]]:
         """
@@ -112,15 +102,13 @@ class ReplayService:
     async def get_replays_for_match(
         self,
         match: Dict[str, Any],
-        ep_url: str,
+        ep_url: Optional[str] = None,
         ep_pass: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Resolves real video streams for a concluded match.
+        Uses native Stremio ytId for reliable, instant 1080p playback.
         """
-        if not ep_url:
-            return []
-
         match_id = match.get("id", "")
         if match_id in self._cache:
             return self._cache[match_id]
@@ -153,8 +141,7 @@ class ReplayService:
                         replays.append({
                             "name": f"🇮🇹 Sintesi #{idx+1}{dur}",
                             "title": f"{v['title']}{channel}",
-                            "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
-                            "behaviorHints": {"notWebReady": False}
+                            "ytId": v["videoId"],
                         })
 
             if isinstance(videos_ext, list):
@@ -162,11 +149,11 @@ class ReplayService:
                     if v["videoId"] not in seen_vids:
                         seen_vids.add(v["videoId"])
                         dur = f" ({v['duration']})" if v.get("duration") else ""
+                        channel = f" • {v['channel']}" if v.get("channel") else ""
                         replays.append({
                             "name": f"🎬 Extended Highlights #{idx+1}{dur}",
-                            "title": f"{v['title']}",
-                            "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
-                            "behaviorHints": {"notWebReady": False}
+                            "title": f"{v['title']}{channel}",
+                            "ytId": v["videoId"],
                         })
 
         # ----------------------------------------------------
@@ -182,8 +169,7 @@ class ReplayService:
                 replays.append({
                     "name": label,
                     "title": f"{v['title']}{channel}",
-                    "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
-                    "behaviorHints": {"notWebReady": False}
+                    "ytId": v["videoId"],
                 })
 
         # ----------------------------------------------------
@@ -194,11 +180,11 @@ class ReplayService:
             videos = await self.search_youtube_innertube(query, max_results=4)
             for idx, v in enumerate(videos):
                 dur = f" ({v['duration']})" if v.get("duration") else ""
+                channel = f" • {v['channel']}" if v.get("channel") else ""
                 replays.append({
                     "name": f"🎾 Highlights Match #{idx+1}{dur}",
-                    "title": f"{v['title']}",
-                    "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
-                    "behaviorHints": {"notWebReady": False}
+                    "title": f"{v['title']}{channel}",
+                    "ytId": v["videoId"],
                 })
 
         # ----------------------------------------------------
@@ -209,11 +195,11 @@ class ReplayService:
             videos = await self.search_youtube_innertube(query, max_results=4)
             for idx, v in enumerate(videos):
                 dur = f" ({v['duration']})" if v.get("duration") else ""
+                channel = f" • {v['channel']}" if v.get("channel") else ""
                 replays.append({
                     "name": f"🏀 Sintesi Basket #{idx+1}{dur}",
-                    "title": f"{v['title']}",
-                    "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
-                    "behaviorHints": {"notWebReady": False}
+                    "title": f"{v['title']}{channel}",
+                    "ytId": v["videoId"],
                 })
 
         # ----------------------------------------------------
@@ -224,11 +210,11 @@ class ReplayService:
             videos = await self.search_youtube_innertube(query, max_results=4)
             for idx, v in enumerate(videos):
                 dur = f" ({v['duration']})" if v.get("duration") else ""
+                channel = f" • {v['channel']}" if v.get("channel") else ""
                 replays.append({
                     "name": f"🎬 Highlights #{idx+1}{dur}",
-                    "title": f"{v['title']}",
-                    "url": self.build_easyproxy_link(ep_url, ep_pass, "youtube", v["url"]),
-                    "behaviorHints": {"notWebReady": False}
+                    "title": f"{v['title']}{channel}",
+                    "ytId": v["videoId"],
                 })
 
         if replays:
