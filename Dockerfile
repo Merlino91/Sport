@@ -12,9 +12,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-EXPOSE 7000
+EXPOSE 7001
 
 ENV EASYSPORTS_HOST=0.0.0.0
-ENV EASYSPORTS_PORT=7000
+ENV EASYSPORTS_PORT=7001
 
 CMD ["python", "run.py"]
