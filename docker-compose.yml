@@ -6,9 +6,9 @@ services:
     container_name: easysports-addon
     restart: unless-stopped
     ports:
-      - "7000:7000"
+      - "7001:7001"
     environment:
       - EASYSPORTS_HOST=0.0.0.0
-      - EASYSPORTS_PORT=7000
+      - EASYSPORTS_PORT=7001
       - STREAMED_API_HOST=streamed.pk
       - STREAMED_CACHE_TTL=60
