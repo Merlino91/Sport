@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import urllib.parse
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import httpx
 from app.services.doh_client import doh_client
 
@@ -56,10 +56,10 @@ class DailymotionService:
 
         return None
 
-    async def get_highlight_streams(self, match_title: str) -> List[Dict[str, Any]]:
+    async def get_highlight_streams(self, match_title: str, base_url: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Searches for highlight videos matching the match title and returns
-        Stremio-compatible stream dictionaries with direct .m3u8 playback URLs.
+        Stremio-compatible stream dictionaries pointing to our on-demand resolver.
         """
         search_query = self.clean_search_query(match_title)
         videos = await self.search_videos(search_query, limit=4)
@@ -78,14 +78,43 @@ class DailymotionService:
             duration_mins = vid.get("duration", 0) // 60
             dur_str = f" ({duration_mins} min)" if duration_mins else ""
 
-            m3u8_url = await self.get_stream_m3u8(vid_id)
-            if m3u8_url:
-                streams.append({
-                    "name": "🎬 Sintesi & Gol (HD)",
-                    "title": f"{title}{dur_str}",
-                    "url": m3u8_url,
-                })
+            # Route to our on-demand endpoint which generates the fresh token at click-time
+            endpoint_path = f"/dailymotion/stream/{vid_id}.m3u8"
+            stream_url = f"{base_url.rstrip('/')}{endpoint_path}" if base_url else endpoint_path
+
+            streams.append({
+                "name": "🎬 Sintesi & Gol (Dailymotion)",
+                "title": f"{title}{dur_str}",
+                "url": stream_url,
+            })
 
         return streams
+
+    async def resolve_and_proxy_manifest(self, video_id: str) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:
+        """
+        Resolves fresh master .m3u8 URL at the exact moment of playback
+        and fetches the manifest content using browser session headers.
+        Returns (content_bytes, media_type, target_url).
+        """
+        m3u8_url = await self.get_stream_m3u8(video_id)
+        if not m3u8_url:
+            return None, None, None
+
+        # Fetch the live manifest content with browser headers to avoid hotlink blocks
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://www.dailymotion.com/",
+            "Origin": "https://www.dailymotion.com",
+        }
+
+        try:
+            data, content_type = await doh_client.get_raw(m3u8_url, custom_headers=headers, timeout=8.0)
+            if data:
+                return data, content_type or "application/vnd.apple.mpegurl", m3u8_url
+        except Exception as e:
+            logger.warning("Manifest proxy fetch failed for video %s: %s", video_id, e)
+
+        # Fallback to redirect URL
+        return None, "application/vnd.apple.mpegurl", m3u8_url
 
 dailymotion_service = DailymotionService()
