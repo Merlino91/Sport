@@ -5,7 +5,6 @@ import urllib.parse
 from typing import Any, Dict, List, Optional
 from app.services.db_service import db_service
 from app.services.dailymotion_service import dailymotion_service
-from app.services.fullmatch_service import fullmatch_service
 from app.services.youtube_service import youtube_service
 from app.services.streamed_api import streamed_api
 
