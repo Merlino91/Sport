@@ -309,10 +309,12 @@ async def dailymotion_stream_proxy(video_id: str):
                 "Cache-Control": "no-cache, no-store, must-revalidate",
             },
         )
-    if target_url:
-        return RedirectResponse(url=target_url, status_code=307)
 
-    raise HTTPException(status_code=404, detail="Video stream not available")
+    logger.warning("Dailymotion CDN blocked stream fetch for %s", video_id)
+    raise HTTPException(
+        status_code=502,
+        detail="Dailymotion CDN ha rifiutato la richiesta di streaming. Usa la voce YouTube per questo evento.",
+    )
 
 
 @app.get("/image-proxy")
