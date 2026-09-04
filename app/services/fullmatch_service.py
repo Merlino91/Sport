@@ -17,14 +17,9 @@ class FullMatchService:
         # Known replay aggregators accessible via DoH
         self._sources = [
             {
-                "name": "footyfull",
-                "search_url": "https://footyfull.com/?s={query}",
-                "base_url": "https://footyfull.com",
-            },
-            {
-                "name": "fullmatches",
-                "search_url": "https://fullmatchesandshows.com/?s={query}",
-                "base_url": "https://fullmatchesandshows.com",
+                "name": "fullmatchsports",
+                "search_url": "https://fullmatchsports.cc/?s={query}",
+                "base_url": "https://fullmatchsports.cc",
             },
         ]
         # Regex for extractable video hosts in EasyProxy
