@@ -34,6 +34,14 @@ class FullMatchService:
             re.IGNORECASE,
         )
 
+    COMMON_PREFIXES = r'\b(ac|as|fc|ss|us|cf|hellas|calcio|sporting|club)\b'
+
+    def normalize_team(self, name: str) -> str:
+        """Removes common club prefixes/suffixes to obtain the core team name."""
+        cleaned = re.sub(self.COMMON_PREFIXES, '', name, flags=re.IGNORECASE)
+        cleaned = re.sub(r'[^\w\s]', '', cleaned).strip()
+        return cleaned or name.strip()
+
     def extract_team_tokens(self, title: str) -> List[str]:
         """Extracts significant search tokens representing teams from match title."""
         cleaned = re.sub(r'\[.*?\]', '', title)  # remove [Football] prefix if present
@@ -49,7 +57,9 @@ class FullMatchService:
     async def find_replay_page_urls(self, team1: str, team2: str) -> List[str]:
         """Searches aggregator sites for article pages matching the two teams."""
         found_urls = []
-        query = f"{team1} vs {team2}"
+        t1_norm = self.normalize_team(team1)
+        t2_norm = self.normalize_team(team2)
+        query = f"{t1_norm} vs {t2_norm}"
         encoded_q = urllib.parse.quote_plus(query)
 
         for src in self._sources:
@@ -65,11 +75,15 @@ class FullMatchService:
                 links = re.findall(r'href=[\'"](https?://[^\'"]+)[\'"]', html)
                 t1_lower = team1.lower()
                 t2_lower = team2.lower()
+                t1_core = t1_norm.lower()
+                t2_core = t2_norm.lower()
 
                 for link in links:
                     link_lower = link.lower()
-                    if t1_lower in link_lower and t2_lower in link_lower:
-                        if link not in found_urls and not link.endswith((".jpg", ".png", ".webp", "/feed/")):
+                    t1_match = (t1_lower in link_lower) or (t1_core and t1_core in link_lower)
+                    t2_match = (t2_lower in link_lower) or (t2_core and t2_core in link_lower)
+                    if t1_match and t2_match:
+                        if link not in found_urls and not link.endswith((".jpg", ".png", ".webp", "/feed/", ".css", ".js")):
                             found_urls.append(link)
                             if len(found_urls) >= 3:
                                 break
