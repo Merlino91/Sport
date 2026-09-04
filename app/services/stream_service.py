@@ -228,7 +228,6 @@ class StreamService:
                 recap_tasks = [
                     youtube_service.get_highlight_streams(title, base_url=base_url),
                     dailymotion_service.get_highlight_streams(title, base_url=base_url),
-                    fullmatch_service.get_replay_streams(title, ep_url=ep_url, ep_pass=ep_pass),
                 ]
                 recap_results = await asyncio.gather(*recap_tasks, return_exceptions=True)
                 recap_streams: List[Dict[str, Any]] = []
