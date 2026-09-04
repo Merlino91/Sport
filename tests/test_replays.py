@@ -98,5 +98,50 @@ class ReplayAndRecapTestCase(unittest.TestCase):
         first_stream = streams[0]
         self.assertTrue("Sintesi" in first_stream["name"] or "Concluso" in first_stream["name"])
 
+    def test_youtube_query_cleaning(self):
+        from app.services.youtube_service import youtube_service
+        self.assertEqual(
+            youtube_service.clean_search_query("Juventus vs Milan"),
+            "Juventus Milan highlights"
+        )
+        self.assertEqual(
+            youtube_service.clean_search_query("[Soccer] Inter - Atalanta"),
+            "Inter Atalanta highlights"
+        )
+
+    def test_youtube_highlight_streams(self):
+        from app.services.youtube_service import youtube_service
+        streams = asyncio.run(youtube_service.get_highlight_streams("Juventus vs Milan"))
+        self.assertTrue(len(streams) >= 1)
+        self.assertIn("ytId", streams[0])
+        self.assertTrue(len(streams[0]["ytId"]) == 11)
+        self.assertIn("YouTube", streams[0]["name"])
+
+    def test_dailymotion_ondemand_url_generation(self):
+        streams = asyncio.run(
+            dailymotion_service.get_highlight_streams("Juventus vs Milan", base_url="https://easysports.example.com")
+        )
+        if streams:
+            first = streams[0]
+            self.assertIn("https://easysports.example.com/dailymotion/stream/", first["url"])
+            self.assertTrue(first["url"].endswith(".m3u8"))
+            self.assertIn("Dailymotion", first["name"])
+
+    def test_dailymotion_endpoint_via_client(self):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        client = TestClient(app)
+        resp = client.get("/dailymotion/stream/invalid_dummy_vid_123.m3u8")
+        self.assertIn(resp.status_code, [404, 502, 307])
+
+    def test_youtube_endpoint_via_client(self):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        client = TestClient(app)
+        resp = client.get("/youtube/stream/I9LBnO7-6PM.m3u8", follow_redirects=False)
+        self.assertEqual(resp.status_code, 307)
+        location = resp.headers.get("location", "")
+        self.assertTrue("googlevideo.com" in location or "youtube.com" in location)
+
 if __name__ == "__main__":
     unittest.main()
