@@ -108,9 +108,16 @@ class DailymotionService:
         }
 
         try:
-            data, content_type = await doh_client.get_raw(m3u8_url, custom_headers=headers, timeout=8.0)
+            data, content_type = await doh_client.get_raw(m3u8_url, headers=headers, timeout=8.0)
             if data:
                 return data, content_type or "application/vnd.apple.mpegurl", m3u8_url
+        except TypeError:
+            try:
+                data, content_type = await doh_client.get_raw(m3u8_url, timeout=8.0)
+                if data:
+                    return data, content_type or "application/vnd.apple.mpegurl", m3u8_url
+            except Exception:
+                pass
         except Exception as e:
             logger.warning("Manifest proxy fetch failed for video %s: %s", video_id, e)
 
