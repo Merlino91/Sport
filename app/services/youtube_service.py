@@ -88,11 +88,14 @@ class YouTubeService:
         vid_id = video["video_id"]
         title = video.get("title", f"{match_title} Highlights")
 
+        yt_url = f"https://www.youtube.com/watch?v={vid_id}"
         return [
             {
                 "name": "🎬 Sintesi Ufficiale (YouTube)",
                 "title": f"{title} (1080p)",
                 "ytId": vid_id,
+                "url": yt_url,
+                "externalUrl": yt_url,
             }
         ]
 
