@@ -76,10 +76,43 @@ class YouTubeService:
 
         return None
 
-    async def get_highlight_streams(self, match_title: str) -> List[Dict[str, Any]]:
+    def _extract_m3u8_sync(self, video_id: str) -> Optional[str]:
+        """Synchronous yt-dlp extraction executed in threadpool."""
+        try:
+            import yt_dlp
+            ydl_opts = {
+                "quiet": True,
+                "skip_download": True,
+                "extract_flat": False,
+                "socket_timeout": 8,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                formats = info.get("formats", [])
+                # Prefer 1080p or 720p HLS m3u8_native stream
+                hls_formats = [f for f in formats if "m3u8" in f.get("protocol", "")]
+                if hls_formats:
+                    hls_formats.sort(key=lambda x: x.get("height") or 0, reverse=True)
+                    return hls_formats[0].get("url")
+                # Fallback to direct MP4 progressive download URL
+                mp4_formats = [f for f in formats if f.get("ext") == "mp4" and f.get("url")]
+                if mp4_formats:
+                    mp4_formats.sort(key=lambda x: x.get("height") or 0, reverse=True)
+                    return mp4_formats[0].get("url")
+        except Exception as e:
+            logger.warning("yt-dlp stream extraction failed for %s: %s", video_id, e)
+        return None
+
+    async def resolve_stream_url(self, video_id: str) -> Optional[str]:
         """
-        Returns a Stremio stream item configured with the native 'ytId' parameter.
-        This triggers Stremio's built-in player on Android TV, PC, FireStick, etc.
+        Asynchronously resolves a direct playable HLS (.m3u8) or MP4 URL for YouTube.
+        """
+        return await asyncio.to_thread(self._extract_m3u8_sync, video_id)
+
+    async def get_highlight_streams(self, match_title: str, base_url: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Returns a Stremio stream item configured with direct on-demand .m3u8 resolver
+        and native 'ytId' parameter for maximum compatibility across all devices.
         """
         video = await self.search_highlight_video(match_title)
         if not video or not video.get("video_id"):
@@ -88,14 +121,17 @@ class YouTubeService:
         vid_id = video["video_id"]
         title = video.get("title", f"{match_title} Highlights")
 
-        yt_url = f"https://www.youtube.com/watch?v={vid_id}"
+        endpoint_path = f"/youtube/stream/{vid_id}.m3u8"
+        stream_url = f"{base_url.rstrip('/')}{endpoint_path}" if base_url else endpoint_path
+        yt_watch_url = f"https://www.youtube.com/watch?v={vid_id}"
+
         return [
             {
-                "name": "🎬 Sintesi Ufficiale (YouTube)",
+                "name": "🎬 Sintesi Ufficiale (YouTube HD)",
                 "title": f"{title} (1080p)",
                 "ytId": vid_id,
-                "url": yt_url,
-                "externalUrl": yt_url,
+                "url": stream_url,
+                "externalUrl": yt_watch_url,
             }
         ]
 
