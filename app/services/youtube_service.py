@@ -71,13 +71,64 @@ class YouTubeService:
             return 0
         return 0
 
+    def _parse_age_days(self, pub_text: str) -> float:
+        """Parses publishedTimeText (e.g. '15 ore fa', '2 giorni fa', '3 mesi fa') into approximate age in days."""
+        if not pub_text:
+            return 0.0
+        text = pub_text.lower().strip()
+
+        # Check years
+        if any(w in text for w in ["anno", "anni", "year", "years"]):
+            match = re.search(r'(\d+)', text)
+            years = int(match.group(1)) if match else 1
+            return years * 365.0
+
+        # Check months
+        if any(w in text for w in ["mese", "mesi", "month", "months"]):
+            match = re.search(r'(\d+)', text)
+            months = int(match.group(1)) if match else 1
+            return months * 30.0
+
+        # Check weeks
+        if any(w in text for w in ["settimana", "settimane", "week", "weeks"]):
+            match = re.search(r'(\d+)', text)
+            weeks = int(match.group(1)) if match else 1
+            return weeks * 7.0
+
+        # Check days
+        if any(w in text for w in ["giorno", "giorni", "day", "days"]):
+            match = re.search(r'(\d+)', text)
+            days = int(match.group(1)) if match else 1
+            return float(days)
+
+        # Check hours or minutes (extremely fresh)
+        if any(w in text for w in ["ora", "ore", "hour", "hours", "minut", "second"]):
+            return 0.2
+
+        return 0.0
+
     def _score_video(self, video: Dict[str, Any], teams: List[str]) -> int:
-        """Scores a video based on channel priority, duration, and title relevance."""
+        """Scores a video based on channel priority, freshness, duration, and title relevance."""
         title = video.get("title", "").lower()
         owner = video.get("channel", "").lower()
         duration_secs = video.get("duration_secs", 0)
+        pub_text = video.get("pub_text", "")
+        age_days = video.get("age_days", 0.0)
 
         score = 0
+
+        # Freshness filter: since matches in EasySports are cached for at most 72h (3 days),
+        # videos published months or years ago are from past seasons or previous encounters!
+        if pub_text:
+            if age_days <= 3.0:
+                score += 80  # Published within 3 days (matches concluded match cache)
+            elif age_days <= 7.0:
+                score += 40  # Published within a week
+            elif age_days <= 14.0:
+                score -= 60  # 2 weeks old
+            else:
+                # Discard older than 2 weeks (months or years ago)
+                score -= 400
 
         # Preferred channel bonus
         for idx, pref in enumerate(PREFERRED_CHANNELS):
@@ -161,14 +212,18 @@ class YouTubeService:
                         title = r.get("title", {}).get("runs", [{}])[0].get("text", "")
                         owner = r.get("ownerText", {}).get("runs", [{}])[0].get("text", "")
                         length = r.get("lengthText", {}).get("simpleText", "")
+                        pub = r.get("publishedTimeText", {}).get("simpleText", "")
                         if vid and title:
                             d_sec = self._parse_duration(length)
+                            age_d = self._parse_age_days(pub)
                             videos.append({
                                 "video_id": vid,
                                 "title": title,
                                 "channel": owner or "YouTube",
                                 "length": length,
                                 "duration_secs": d_sec,
+                                "pub_text": pub,
+                                "age_days": age_d,
                             })
                 except Exception as ex:
                     logger.debug("Failed parsing ytInitialData: %s", ex)
@@ -186,18 +241,26 @@ class YouTubeService:
                             "channel": "YouTube",
                             "length": "",
                             "duration_secs": 300,
+                            "pub_text": "",
+                            "age_days": 0.0,
                         })
 
             if not videos:
                 return []
 
+            # Hard filter: discard videos older than 14 days if publication time is known
+            fresh_videos = [
+                v for v in videos
+                if not (v.get("pub_text") and v.get("age_days", 0.0) > 14.0)
+            ]
+            candidates_pool = fresh_videos if fresh_videos else videos
+
             # Score and rank all discovered videos
-            for v in videos:
+            for v in candidates_pool:
                 v["score"] = self._score_video(v, teams)
 
-            # Filter out severely penalized items if we have better candidates
-            filtered = [v for v in videos if v["score"] > 0]
-            candidates = filtered if filtered else videos
+            filtered = [v for v in candidates_pool if v["score"] > 0]
+            candidates = filtered if filtered else candidates_pool
             candidates.sort(key=lambda x: x["score"], reverse=True)
 
             # Deduplicate by video_id
