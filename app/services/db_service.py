@@ -1,154 +1,120 @@
-import json
+import asyncio
 import logging
-from pathlib import Path
-import sqlite3
-import time
-from typing import Any, Dict, List, Optional
+import urllib.parse
+from typing import Any, Dict, List, Optional, Tuple
+import httpx
+from app.services.doh_client import doh_client
 
-logger = logging.getLogger("easysports.db")
+logger = logging.getLogger("easysports.dailymotion")
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR.parent / "data"
-DB_PATH = DATA_DIR / "events.db"
+class DailymotionService:
+    """Extracts sports highlights and direct .m3u8 HLS master streams from Dailymotion."""
 
-class DBService:
-    """Manages SQLite storage for keeping sports events active for 72 hours for replays."""
+    def __init__(self):
+        self._api_base = "https://api.dailymotion.com"
+        self._metadata_base = "https://www.dailymotion.com/player/metadata/video"
 
-    def __init__(self, db_path: Optional[Path] = None):
-        self._db_path = db_path or DB_PATH
-        self._ensure_db()
+    def clean_search_query(self, title: str) -> str:
+        """Cleans match title into effective search terms for highlights."""
+        cleaned = title
+        # Normalize separators
+        for sep in [" vs ", " vs. ", " - ", " v "]:
+            if sep in cleaned:
+                parts = cleaned.split(sep, 1)
+                t1 = parts[0].strip()
+                t2 = parts[1].strip()
+                return f"{t1} {t2} highlights"
 
-    def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path))
-        conn.row_factory = sqlite3.Row
-        return conn
+        return f"{cleaned} highlights"
 
-    def _ensure_db(self):
-        """Initializes data directory and database schema."""
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS matches (
-                    id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    category TEXT NOT NULL,
-                    date INTEGER NOT NULL,
-                    poster TEXT,
-                    popular INTEGER DEFAULT 0,
-                    sources TEXT,
-                    updated_at INTEGER NOT NULL
-                )
-            """)
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_matches_date ON matches(date)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_matches_cat ON matches(category)")
-            conn.commit()
-
-    def upsert_matches(self, matches: List[Dict[str, Any]]):
-        """Inserts or updates matches in SQLite store."""
-        if not matches:
-            return
-
-        now = int(time.time())
-        records = []
-        for m in matches:
-            m_id = m.get("id")
-            if not m_id:
-                continue
-            title = m.get("title", "Live Sports")
-            category = (m.get("category") or "other").lower()
-            date = int(m.get("date", 0))
-            poster = m.get("poster") or ""
-            popular = 1 if m.get("popular") else 0
-            sources = json.dumps(m.get("sources", []))
-            records.append((m_id, title, category, date, poster, popular, sources, now))
-
-        if not records:
-            return
-
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.executemany("""
-                INSERT INTO matches (id, title, category, date, poster, popular, sources, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    title = excluded.title,
-                    category = excluded.category,
-                    date = excluded.date,
-                    poster = excluded.poster,
-                    popular = excluded.popular,
-                    sources = excluded.sources,
-                    updated_at = excluded.updated_at
-            """, records)
-            conn.commit()
-
-    def get_match_by_id(self, match_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieves a single match from the database by ID."""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM matches WHERE id = ?", (match_id,))
-            row = cursor.fetchone()
-            if not row:
-                return None
-            return self._row_to_match(row)
-
-    def get_concluded_matches(self, category_id: str = "all", max_age_hours: int = 72) -> List[Dict[str, Any]]:
-        """
-        Returns matches that started more than 4 hours ago, but less than max_age_hours ago.
-        """
-        now_ms = int(time.time() * 1000)
-        # 4 hours after start
-        cutoff_recent = now_ms - (4 * 3600 * 1000)
-        # 72 hours ago
-        cutoff_oldest = now_ms - (max_age_hours * 3600 * 1000)
-
-        query = """
-            SELECT * FROM matches
-            WHERE date > 0 AND date <= ? AND date >= ?
-        """
-        params: List[Any] = [cutoff_recent, cutoff_oldest]
-
-        if category_id != "all":
-            query += " AND category = ?"
-            params.append(category_id.lower())
-
-        query += " ORDER BY date DESC"
-
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            rows = cursor.fetchall()
-            return [self._row_to_match(r) for r in rows]
-
-    def purge_expired_matches(self, max_age_hours: int = 72) -> int:
-        """Deletes matches concluded more than max_age_hours ago."""
-        now_ms = int(time.time() * 1000)
-        cutoff_oldest = now_ms - (max_age_hours * 3600 * 1000)
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM matches WHERE date > 0 AND date < ?", (cutoff_oldest,))
-            deleted = cursor.rowcount
-            conn.commit()
-            if deleted > 0:
-                logger.info("Purged %d expired matches older than %d hours", deleted, max_age_hours)
-            return deleted
-
-    def _row_to_match(self, row: sqlite3.Row) -> Dict[str, Any]:
-        sources = []
+    async def search_videos(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Searches Dailymotion for candidate highlight videos."""
+        encoded_q = urllib.parse.quote_plus(query)
+        url = f"{self._api_base}/videos?search={encoded_q}&fields=id,title,duration,created_time&limit={limit}"
         try:
-            if row["sources"]:
-                sources = json.loads(row["sources"])
-        except Exception:
-            sources = []
+            data = await doh_client.get_json(url)
+            if isinstance(data, dict) and "list" in data:
+                return data["list"]
+        except Exception as e:
+            logger.warning("Dailymotion search failed for query '%s': %s", query, e)
 
-        return {
-            "id": row["id"],
-            "title": row["title"],
-            "category": row["category"],
-            "date": row["date"],
-            "poster": row["poster"],
-            "popular": bool(row["popular"]),
-            "sources": sources,
+        return []
+
+    async def get_stream_m3u8(self, video_id: str) -> Optional[str]:
+        """Fetches the direct master .m3u8 stream manifest from Dailymotion player metadata."""
+        url = f"{self._metadata_base}/{video_id}"
+        try:
+            data = await doh_client.get_json(url)
+            if isinstance(data, dict):
+                qualities = data.get("qualities", {})
+                auto_list = qualities.get("auto", [])
+                for item in auto_list:
+                    if item.get("type") == "application/x-mpegURL" and "url" in item:
+                        return item["url"]
+        except Exception as e:
+            logger.warning("Failed extracting m3u8 for Dailymotion video %s: %s", video_id, e)
+
+        return None
+
+    async def get_highlight_streams(self, match_title: str, base_url: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Searches for highlight videos matching the match title and returns
+        Stremio-compatible stream dictionaries pointing to our on-demand resolver.
+        """
+        search_query = self.clean_search_query(match_title)
+        videos = await self.search_videos(search_query, limit=4)
+        if not videos:
+            return []
+
+        # Filter videos by duration: between 100s (~1.5m) and 1200s (20m)
+        candidates = [v for v in videos if 100 <= v.get("duration", 0) <= 1200]
+        if not candidates:
+            candidates = videos[:2]
+
+        streams = []
+        for vid in candidates[:2]:
+            vid_id = vid.get("id")
+            title = vid.get("title", "Highlights")
+            duration_mins = vid.get("duration", 0) // 60
+            dur_str = f" ({duration_mins} min)" if duration_mins else ""
+
+            # Route to our on-demand endpoint which generates the fresh token at click-time
+            endpoint_path = f"/dailymotion/stream/{vid_id}.m3u8"
+            stream_url = f"{base_url.rstrip('/')}{endpoint_path}" if base_url else endpoint_path
+
+            streams.append({
+                "name": "🎬 Sintesi & Gol (Dailymotion)",
+                "title": f"{title}{dur_str}",
+                "url": stream_url,
+            })
+
+        return streams
+
+    async def resolve_and_proxy_manifest(self, video_id: str) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:
+        """
+        Resolves fresh master .m3u8 URL at the exact moment of playback
+        and fetches the manifest content using browser session headers.
+        Returns (content_bytes, media_type, target_url).
+        """
+        m3u8_url = await self.get_stream_m3u8(video_id)
+        if not m3u8_url:
+            return None, None, None
+
+        # Fetch the live manifest content with browser headers to avoid hotlink blocks
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://www.dailymotion.com/",
+            "Origin": "https://www.dailymotion.com",
         }
 
-db_service = DBService()
+        try:
+            data, content_type = await doh_client.get_raw(m3u8_url, custom_headers=headers, timeout=8.0)
+            if data:
+                return data, content_type or "application/vnd.apple.mpegurl", m3u8_url
+        except Exception as e:
+            logger.warning("Manifest proxy fetch failed for video %s: %s", video_id, e)
+
+        # Fallback to redirect URL
+        return None, "application/vnd.apple.mpegurl", m3u8_url
+
+dailymotion_service = DailymotionService()
