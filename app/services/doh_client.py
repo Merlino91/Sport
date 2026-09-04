@@ -145,6 +145,17 @@ class DoHClient:
                 return content, content_type
             logger.warning("Raw request to %s returned status %d", url, response.status_code)
         except Exception as e:
+            if target_url != url:
+                try:
+                    fallback_headers = {"User-Agent": headers["User-Agent"], "Accept": headers.get("Accept", "*/*")}
+                    response = await self._client.get(url, headers=fallback_headers, timeout=timeout)
+                    if response.status_code == 200:
+                        content_type = response.headers.get("content-type", "image/webp")
+                        content = response.content
+                        self._image_cache[url] = (content, content_type, now + self._image_cache_ttl)
+                        return content, content_type
+                except Exception:
+                    pass
             logger.error("Failed raw request to %s: %s", url, e)
 
         return None, None
