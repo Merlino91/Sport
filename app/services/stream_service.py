@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from app.services.db_service import db_service
 from app.services.dailymotion_service import dailymotion_service
 from app.services.fullmatch_service import fullmatch_service
+from app.services.youtube_service import youtube_service
 from app.services.streamed_api import streamed_api
 
 logger = logging.getLogger("easysports.stream")
@@ -179,6 +180,7 @@ class StreamService:
         ep_url: Optional[str],
         ep_pass: Optional[str] = None,
         user_tz: Optional[str] = None,
+        base_url: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Resolves streams for an event ID and formats them for Stremio.
@@ -224,7 +226,8 @@ class StreamService:
             if diff_mins < -240:
                 title = match.get("title", "")
                 recap_tasks = [
-                    dailymotion_service.get_highlight_streams(title),
+                    youtube_service.get_highlight_streams(title),
+                    dailymotion_service.get_highlight_streams(title, base_url=base_url),
                     fullmatch_service.get_replay_streams(title, ep_url=ep_url, ep_pass=ep_pass),
                 ]
                 recap_results = await asyncio.gather(*recap_tasks, return_exceptions=True)
