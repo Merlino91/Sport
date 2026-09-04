@@ -226,7 +226,7 @@ class StreamService:
             if diff_mins < -240:
                 title = match.get("title", "")
                 recap_tasks = [
-                    youtube_service.get_highlight_streams(title),
+                    youtube_service.get_highlight_streams(title, base_url=base_url),
                     dailymotion_service.get_highlight_streams(title, base_url=base_url),
                     fullmatch_service.get_replay_streams(title, ep_url=ep_url, ep_pass=ep_pass),
                 ]
