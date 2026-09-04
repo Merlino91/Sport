@@ -7,7 +7,7 @@ from typing import Optional, Tuple
 import urllib.parse
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -21,6 +21,7 @@ from app.config import (
     STREAMED_API_HOST,
 )
 from app.services.catalog_service import catalog_service
+from app.services.dailymotion_service import dailymotion_service
 from app.services.doh_client import doh_client
 from app.services.stream_service import stream_service
 
@@ -278,11 +279,40 @@ async def root_stream_endpoint(type: str, id: str):
 
 # Configured Stream Route
 @app.get("/{config}/stream/{type}/{id}.json")
-async def stream_endpoint(config: str, type: str, id: str):
+async def stream_endpoint(request: Request, config: str, type: str, id: str):
     """Stream resolution endpoint returning EasyProxy-wrapped stream links."""
     ep_url, ep_pass, user_tz = decode_config(config)
-    streams = await stream_service.get_streams_for_event(id, ep_url=ep_url, ep_pass=ep_pass, user_tz=user_tz)
+    base_url = get_base_url(request)
+    streams = await stream_service.get_streams_for_event(
+        id,
+        ep_url=ep_url,
+        ep_pass=ep_pass,
+        user_tz=user_tz,
+        base_url=base_url,
+    )
     return JSONResponse(content={"streams": streams})
+
+
+@app.get("/dailymotion/stream/{video_id}.m3u8")
+async def dailymotion_stream_proxy(video_id: str):
+    """
+    On-demand resolver and proxy for Dailymotion video highlights.
+    Generates fresh HLS token at click-time and serves the manifest directly.
+    """
+    content, media_type, target_url = await dailymotion_service.resolve_and_proxy_manifest(video_id)
+    if content:
+        return Response(
+            content=content,
+            media_type=media_type or "application/vnd.apple.mpegurl",
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+            },
+        )
+    if target_url:
+        return RedirectResponse(url=target_url, status_code=307)
+
+    raise HTTPException(status_code=404, detail="Video stream not available")
 
 
 @app.get("/image-proxy")
