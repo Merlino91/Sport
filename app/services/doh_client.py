@@ -103,7 +103,15 @@ class DoHClient:
 
         return None
 
-    async def get_raw(self, url: str, host_header: Optional[str] = None, timeout: float = 8.0) -> Tuple[Optional[bytes], Optional[str]]:
+    async def get_raw(
+        self,
+        url: str,
+        host_header: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+        custom_headers: Optional[Dict[str, str]] = None,
+        timeout: float = 8.0,
+        **kwargs,
+    ) -> Tuple[Optional[bytes], Optional[str]]:
         """
         Executes an HTTP GET request resolving host via DoH and returns raw bytes and content-type.
         Caches images in memory to prevent connection pool exhaustion during catalog browsing.
@@ -121,17 +129,20 @@ class DoHClient:
 
         resolved_ip = await self.resolve(hostname)
         target_url = url
-        headers = {
+        req_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         }
+        extra_h = headers or custom_headers
+        if extra_h:
+            req_headers.update(extra_h)
 
         if resolved_ip and resolved_ip != hostname:
             target_url = str(parsed.copy_with(host=resolved_ip))
-            headers["Host"] = host_header or hostname
+            req_headers["Host"] = host_header or hostname
 
         try:
-            response = await self._client.get(target_url, headers=headers, timeout=timeout)
+            response = await self._client.get(target_url, headers=req_headers, timeout=timeout)
             if response.status_code == 200:
                 content_type = response.headers.get("content-type", "image/webp")
                 content = response.content
@@ -147,7 +158,8 @@ class DoHClient:
         except Exception as e:
             if target_url != url:
                 try:
-                    fallback_headers = {"User-Agent": headers["User-Agent"], "Accept": headers.get("Accept", "*/*")}
+                    fallback_headers = req_headers.copy()
+                    fallback_headers.pop("Host", None)
                     response = await self._client.get(url, headers=fallback_headers, timeout=timeout)
                     if response.status_code == 200:
                         content_type = response.headers.get("content-type", "image/webp")
