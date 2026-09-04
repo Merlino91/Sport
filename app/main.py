@@ -321,14 +321,22 @@ async def dailymotion_stream_proxy(video_id: str):
 @app.get("/youtube/stream/{video_id}.m3u8")
 async def youtube_stream_proxy(video_id: str):
     """
-    On-demand resolver for YouTube video highlights using yt-dlp.
-    Resolves real HLS master playlist URL and redirects Stremio directly to it.
+    On-demand master HLS playlist resolver combining video and audio for YouTube highlights.
+    Serves the master .m3u8 manifest directly linking the video and audio renditions.
     """
-    stream_url = await youtube_service.resolve_stream_url(video_id)
-    if stream_url:
-        return RedirectResponse(url=stream_url, status_code=307)
+    content, redirect_url = await youtube_service.resolve_stream_manifest(video_id)
+    if content:
+        return Response(
+            content=content,
+            media_type="application/vnd.apple.mpegurl",
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "public, max-age=3600",
+            },
+        )
+    if redirect_url:
+        return RedirectResponse(url=redirect_url, status_code=307)
 
-    # Fallback to direct YouTube watch URL if extraction fails
     return RedirectResponse(url=f"https://www.youtube.com/watch?v={video_id}", status_code=307)
 
 
