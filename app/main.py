@@ -24,6 +24,7 @@ from app.services.catalog_service import catalog_service
 from app.services.dailymotion_service import dailymotion_service
 from app.services.doh_client import doh_client
 from app.services.stream_service import stream_service
+from app.services.youtube_service import youtube_service
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -315,6 +316,20 @@ async def dailymotion_stream_proxy(video_id: str):
         status_code=502,
         detail="Dailymotion CDN ha rifiutato la richiesta di streaming. Usa la voce YouTube per questo evento.",
     )
+
+
+@app.get("/youtube/stream/{video_id}.m3u8")
+async def youtube_stream_proxy(video_id: str):
+    """
+    On-demand resolver for YouTube video highlights using yt-dlp.
+    Resolves real HLS master playlist URL and redirects Stremio directly to it.
+    """
+    stream_url = await youtube_service.resolve_stream_url(video_id)
+    if stream_url:
+        return RedirectResponse(url=stream_url, status_code=307)
+
+    # Fallback to direct YouTube watch URL if extraction fails
+    return RedirectResponse(url=f"https://www.youtube.com/watch?v={video_id}", status_code=307)
 
 
 @app.get("/image-proxy")
