@@ -297,24 +297,17 @@ async def stream_endpoint(request: Request, config: str, type: str, id: str):
 @app.get("/dailymotion/stream/{video_id}.m3u8")
 async def dailymotion_stream_proxy(video_id: str):
     """
-    On-demand resolver and proxy for Dailymotion video highlights.
-    Generates fresh HLS token at click-time and serves the manifest directly.
+    On-demand resolver and redirect for Dailymotion video highlights.
+    Extracts direct HLS master .m3u8 stream via yt-dlp with TLS impersonation.
     """
-    content, media_type, target_url = await dailymotion_service.resolve_and_proxy_manifest(video_id)
-    if content:
-        return Response(
-            content=content,
-            media_type=media_type or "application/vnd.apple.mpegurl",
-            headers={
-                "Access-Control-Allow-Origin": "*",
-                "Cache-Control": "no-cache, no-store, must-revalidate",
-            },
-        )
+    stream_url = await dailymotion_service.resolve_stream_url(video_id)
+    if stream_url:
+        return RedirectResponse(url=stream_url, status_code=307)
 
-    logger.warning("Dailymotion CDN blocked stream fetch for %s", video_id)
+    logger.warning("Dailymotion stream extraction failed for %s", video_id)
     raise HTTPException(
         status_code=502,
-        detail="Dailymotion CDN ha rifiutato la richiesta di streaming. Usa la voce YouTube per questo evento.",
+        detail="Impossibile estrarre lo streaming da Dailymotion. Usa la voce YouTube per questo evento.",
     )
 
 
