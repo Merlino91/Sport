@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from app.services.db_service import db_service
 from app.services.dailymotion_service import dailymotion_service
 from app.services.youtube_service import youtube_service
+from app.services.sportvideo_service import sportvideo_service
 from app.services.streamed_api import streamed_api
 
 logger = logging.getLogger("easysports.stream")
@@ -224,9 +225,11 @@ class StreamService:
             # More than 4 hours after start -> fetch Recap & Replay streams!
             if diff_mins < -240:
                 title = match.get("title", "")
+                category = match.get("category", "")
                 recap_tasks = [
                     youtube_service.get_highlight_streams(title, base_url=base_url),
                     dailymotion_service.get_highlight_streams(title, base_url=base_url),
+                    sportvideo_service.get_replay_streams(title, category=category, event_date_ms=date_ms),
                 ]
                 recap_results = await asyncio.gather(*recap_tasks, return_exceptions=True)
                 recap_streams: List[Dict[str, Any]] = []
