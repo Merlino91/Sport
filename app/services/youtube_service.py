@@ -394,8 +394,6 @@ class YouTubeService:
                 "name": label,
                 "title": f"{title} (1080p)",
                 "ytId": vid_id,
-                "url": stream_url,
-                "externalUrl": yt_watch_url,
             })
 
         return streams
