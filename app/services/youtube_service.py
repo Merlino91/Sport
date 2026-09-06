@@ -33,10 +33,11 @@ class YouTubeService:
     """
 
     def __init__(self):
-        self._search_url = "https://www.youtube.com/results?search_query={query}"
+        self._search_url = "https://www.youtube.com/results?search_query={query}&gl=IT&hl=it"
         self._headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Cookie": "PREF=hl=it&gl=IT;",
         }
         # In-memory cache for resolved stream manifests (video_id -> (timestamp, content, redirect))
         self._manifest_cache: Dict[str, Tuple[float, Optional[str], Optional[str]]] = {}
@@ -184,7 +185,7 @@ class YouTubeService:
         teams = self.extract_teams(match_title)
 
         try:
-            data, _ = await doh_client.get_raw(url, timeout=6.0)
+            data, _ = await doh_client.get_raw(url, headers=self._headers, timeout=6.0)
             if not data:
                 return []
 
